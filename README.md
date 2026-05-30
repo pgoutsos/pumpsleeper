@@ -66,13 +66,11 @@ sudo nmcli con add type wifi ifname wlan0 con-name PumpSleeper-Hotspot \
     wifi-sec.key-mgmt wpa-psk wifi-sec.psk "pumpspy123"
 sudo nmcli con up PumpSleeper-Hotspot
 
-# Forward device traffic to your server machine (replace 192.168.0.100 with your server's IP)
+# Forward ALL port 8081 traffic from the hotspot to your server machine
+# (replace 192.168.0.100 with your server's IP)
 SERVER_IP=192.168.0.100
-for ip in 206.80.104.221 64.227.40.212 64.227.46.155 64.227.33.97 \
-          64.225.50.52 64.225.51.200 64.225.50.148 64.225.50.146; do
-    sudo iptables -t nat -A PREROUTING -i wlan0 -p tcp -d $ip --dport 8081 \
-        -j DNAT --to-destination ${SERVER_IP}:8081
-done
+sudo iptables -t nat -A PREROUTING -i wlan0 -p tcp --dport 8081 \
+    -j DNAT --to-destination ${SERVER_IP}:8081
 sudo iptables -t nat -A POSTROUTING -o wlan0 -j MASQUERADE
 sudo sysctl -w net.ipv4.ip_forward=1
 sudo netfilter-persistent save

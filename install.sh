@@ -213,28 +213,15 @@ success "Hotspot '$HOTSPOT_SSID' active on $WIFI_IFACE ($HOTSPOT_IP)"
 # ── iptables DNAT ─────────────────────────────────────────────────────────────
 header "iptables traffic interception"
 
-# Flush existing PumpSleeper rules to avoid duplicates
+# Remove any existing rule for this port to avoid duplicates
 iptables -t nat -D PREROUTING -i "$WIFI_IFACE" -p tcp --dport "$SERVER_PORT" \
     -j DNAT --to-destination "${HOTSPOT_IP}:${SERVER_PORT}" 2>/dev/null || true
 
-# The real PumpSpy server IPs (add all known IPs)
-REAL_IPS=(
-    "206.80.104.221"
-    "64.227.40.212"
-    "64.227.46.155"
-    "64.227.33.97"
-    "64.225.50.52"
-    "64.225.51.200"
-    "64.225.50.148"
-    "64.225.50.146"
-)
-
-for ip in "${REAL_IPS[@]}"; do
-    iptables -t nat -D PREROUTING -i "$WIFI_IFACE" -p tcp -d "$ip" --dport "$SERVER_PORT" \
-        -j DNAT --to-destination "${HOTSPOT_IP}:${SERVER_PORT}" 2>/dev/null || true
-    iptables -t nat -A PREROUTING -i "$WIFI_IFACE" -p tcp -d "$ip" --dport "$SERVER_PORT" \
-        -j DNAT --to-destination "${HOTSPOT_IP}:${SERVER_PORT}"
-done
+# Single rule: redirect ALL port 8081 traffic from the hotspot interface to
+# the local server. This works regardless of which IP the device connects to,
+# so there's no need to hardcode pumpspy.com's server IPs.
+iptables -t nat -A PREROUTING -i "$WIFI_IFACE" -p tcp --dport "$SERVER_PORT" \
+    -j DNAT --to-destination "${HOTSPOT_IP}:${SERVER_PORT}"
 
 iptables -t nat -D POSTROUTING -o "$WIFI_IFACE" -j MASQUERADE 2>/dev/null || true
 iptables -t nat -A POSTROUTING -o "$WIFI_IFACE" -j MASQUERADE
