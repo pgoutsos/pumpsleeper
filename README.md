@@ -36,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/your-repo/pumpsleeper/main/install.
 Or clone the repo first:
 
 ```bash
-git clone https://github.com/your-repo/pumpsleeper.git
+git clone https://github.com/pgoutsos/pumpsleeper.git
 cd pumpsleeper
 sudo bash install.sh
 ```
@@ -81,7 +81,7 @@ sudo netfilter-persistent save
 ### 2. Run PumpSleeper on your server
 
 ```bash
-git clone https://github.com/your-repo/pumpsleeper.git
+git clone https://github.com/pgoutsos/pumpsleeper.git
 cd pumpsleeper
 
 # Optional: configure MQTT in docker-compose.app.yml first

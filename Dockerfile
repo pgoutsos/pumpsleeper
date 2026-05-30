@@ -13,7 +13,7 @@ FROM python:3.11-slim
 
 LABEL org.opencontainers.image.title="PumpSleeper" \
       org.opencontainers.image.description="Local proxy and dashboard for PumpSpy sump pump monitors" \
-      org.opencontainers.image.source="https://github.com/your-repo/pumpsleeper"
+      org.opencontainers.image.source="https://github.com/pgoutsos/pumpsleeper"
 
 # Install Python dependencies
 COPY app/requirements.txt /tmp/requirements.txt

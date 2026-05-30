@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 #  PumpSleeper — Raspberry Pi Installer
-#  https://github.com/your-repo/pumpsleeper
+#  https://github.com/pgoutsos/pumpsleeper
 #
 #  Installs and configures PumpSleeper on a Raspberry Pi running Raspberry Pi OS.
 #  Sets up a WiFi hotspot, iptables interception, Python services, and
