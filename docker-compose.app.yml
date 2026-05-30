@@ -1,0 +1,50 @@
+# =============================================================================
+#  PumpSleeper — Docker Compose (standalone server + dashboard)
+#
+#  Use this to run PumpSleeper on any Linux machine (NAS, Mac Mini, server).
+#
+#  Prerequisites:
+#    - iptables DNAT must be set up separately on the Pi/router intercepting
+#      the PumpSpy device traffic and forwarding it to this machine's port 8081.
+#    - See README.md for full network setup instructions.
+#
+#  Usage:
+#    docker compose -f docker-compose.app.yml up -d
+# =============================================================================
+
+services:
+  pumpsleeper:
+    image: pumpsleeper:latest
+    # Build locally if no pre-built image is available:
+    build: .
+    container_name: pumpsleeper
+    restart: unless-stopped
+
+    # host networking lets the server receive iptables-redirected traffic
+    # and lets it reach the MQTT broker on your LAN without extra config.
+    network_mode: host
+
+    volumes:
+      - pumpsleeper-data:/data
+
+    environment:
+      # ── Required ──────────────────────────────────────────────────────────
+      PUMPSPY_DATA: /data
+
+      # ── Optional: Home Assistant MQTT integration ─────────────────────────
+      # Uncomment and fill in to enable HA auto-discovery
+      # PUMPSLEEPER_MQTT_HOST: 192.168.0.55
+      # PUMPSLEEPER_MQTT_PORT: 1883
+      # PUMPSLEEPER_MQTT_USER: ""
+      # PUMPSLEEPER_MQTT_PASSWORD: ""
+      # PUMPSLEEPER_MQTT_PREFIX: pumpsleeper
+      # PUMPSLEEPER_DEVICE_ID: pumpsleeper_01
+
+      # ── Optional: proxy settings ──────────────────────────────────────────
+      # PUMPSPY_REAL_SERVER: http://206.80.104.221:8081
+      # PUMPSPY_PROXY: "1"           # set to "0" for takeover-only mode
+      # PUMPSPY_PROXY_TIMEOUT: "8"
+
+volumes:
+  pumpsleeper-data:
+    driver: local

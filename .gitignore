@@ -1,0 +1,51 @@
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# ── PumpSleeper runtime data ──────────────────────────────────────────────────
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.log.*
+data/
+
+# ── Home Assistant — user data (never commit credentials or personal config) ──
+homelab/homeassistant/.storage/
+homelab/homeassistant/.cache/
+homelab/homeassistant/.ha_run.lock
+homelab/homeassistant/.HA_VERSION
+homelab/homeassistant/home-assistant*.db
+homelab/homeassistant/home-assistant*.log
+homelab/homeassistant/home-assistant*.log.*
+homelab/homeassistant/secrets.yaml
+homelab/homeassistant/automations.yaml
+homelab/homeassistant/scenes.yaml
+homelab/homeassistant/scripts.yaml
+homelab/homeassistant/blueprints/
+
+# ── Mosquitto runtime data ────────────────────────────────────────────────────
+homelab/mosquitto/data/
+homelab/mosquitto/log/
+
+# ── Deploy / provision artifacts ──────────────────────────────────────────────
+deploy.sh
+image/
+scripts/
+
+# ── Stale root-level copies (real files live in app/) ────────────────────────
+/server.py
+/dashboard.py

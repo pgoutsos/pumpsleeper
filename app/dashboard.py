@@ -1,0 +1,959 @@
+#!/usr/bin/env python3
+"""
+PumpSpy Dashboard — port 8080
+Reads events.jsonl written by server.py and serves a live monitoring dashboard.
+"""
+
+import os
+import requests as rlib
+from datetime import datetime, timezone, timedelta
+from flask import Flask, jsonify, request, render_template_string
+from db import load_events, init_db, get_mode_switched_ts
+
+SERVER_URL = os.environ.get("PUMPSPY_SERVER_URL", "http://127.0.0.1:8081")
+
+app = Flask(__name__)
+
+# ---------------------------------------------------------------------------
+
+def utc_ts_to_local_date(ts: str, tz_offset_minutes: int = 0) -> str:
+    """
+    Convert a UTC ISO timestamp to the user's local date string (YYYY-MM-DD).
+    tz_offset_minutes: JS getTimezoneOffset() — minutes to subtract from local to get UTC.
+    e.g. EDT = 240, so local = UTC - 240min.
+    """
+    try:
+        dt = datetime.fromisoformat(ts)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        local_dt = dt - timedelta(minutes=tz_offset_minutes)
+        return local_dt.date().isoformat()
+    except Exception:
+        return ts[:10]
+
+
+def compute_data(events, tz_offset_minutes: int = 0,
+                 filter_date: str = None, filter_pump: str = None):
+    now = datetime.now(timezone.utc)
+
+    rssi_pings, batt_pings, outlet_alerts, backup_runs, main_bbs_runs, faults, alerts, unknowns, triggers = [], [], [], [], [], [], [], [], []
+
+    for e in events:
+        kind = e.get("kind")
+        ts   = e.get("ts", "")
+        data = e.get("data", {})
+
+        if kind == "ping":
+            dtype = data.get("idpings_data_type")
+            value = data.get("value")
+            if dtype == 1:
+                rssi_pings.append({"ts": ts, "rssi": value})
+            elif dtype == 3:
+                # value is already in volts (e.g. 3.07)
+                batt_pings.append({"ts": ts, "voltage": round(value, 3) if value is not None else None})
+
+        elif kind == "pump_outlet_alert":
+            alert_type = data.get("idPumpAlertType")
+            value      = data.get("value", 0)
+            if alert_type == 105:
+                # value is AC current in milliamps (0 = pump off)
+                outlet_alerts.append({
+                    "ts":   ts,
+                    "value": value,
+                    "mamp":  value,
+                    "type":  alert_type,
+                })
+            else:
+                # Other alert types: high_water, ac_power_loss, excessive_current, etc.
+                ALERT_NAMES = {
+                    101: "high_water",
+                    102: "ac_power_loss",
+                    103: "excessive_current",
+                    104: "excessive_run_time",
+                    106: "pump_failure",
+                }
+                name = ALERT_NAMES.get(alert_type, f"alert_type_{alert_type}")
+                alerts.append({
+                    "ts":    ts,
+                    "type":  alert_type,
+                    "name":  name,
+                    "state": "ON" if value else "OFF",
+                    "value": value,
+                })
+
+        elif kind == "bbs_json":
+            # Backup pump events
+            inner = data.get("inner", {})
+            if not isinstance(inner, dict):
+                continue
+            if "high_water" in inner:
+                triggers.append({"ts": ts, "type": "high_water", "active": bool(inner["high_water"])})
+            elif "low_water" in inner:
+                triggers.append({"ts": ts, "type": "low_water",  "active": bool(inner["low_water"])})
+            elif "motor_fail" in inner:
+                faults.append({
+                    "ts":    ts,
+                    "state": "FAULT" if inner["motor_fail"] else "CLEARED",
+                    "pump":  "backup",
+                })
+            elif "motor" in inner:
+                batt_mv    = inner.get("battery_voltage", 0) or 0
+                loaded_mv  = inner.get("loaded", 0) or 0
+                mamp       = inner.get("mamp", 0) or 0
+                ticks      = inner.get("time")
+                duration_s = round(ticks / 10, 1)  if ticks is not None else None
+                gallons    = round(ticks / 10.2, 1) if ticks is not None else None
+                run = {
+                    "ts":        ts,
+                    "motor":     "STOPPED",
+                    "ticks":     ticks,
+                    "duration":  duration_s,   # ticks / 10 = seconds (confirmed)
+                    "gallons":   gallons,       # ticks / 10.2 ≈ gallons (confirmed)
+                    "amps":      round(mamp / 1000, 2),
+                    "battery_v": round(batt_mv  / 1000, 3),
+                    "loaded_v":  round(loaded_mv / 1000, 3),
+                }
+                # motor=1 → main pump ran; motor=0 → backup pump ran
+                if inner["motor"]:
+                    main_bbs_runs.append(run)
+                else:
+                    backup_runs.append(run)
+
+        elif kind == "unknown":
+            unknowns.append({
+                "ts":     ts,
+                "method": data.get("method"),
+                "path":   data.get("path"),
+                "body":   data.get("body", ""),
+            })
+
+    # --- Online / RSSI --------------------------------------------------------
+    online         = False
+    last_ping_ts   = None
+    last_rssi      = None
+    last_battery_v = None
+
+    # Use the most recent ping of ANY type to determine online status
+    all_pings_ts = []
+    if rssi_pings:
+        all_pings_ts.append(rssi_pings[-1]["ts"])
+        last_rssi = rssi_pings[-1]["rssi"]
+    if batt_pings:
+        all_pings_ts.append(batt_pings[-1]["ts"])
+        last_battery_v = batt_pings[-1]["voltage"]
+
+    if all_pings_ts:
+        last_ping_ts = max(all_pings_ts)
+        try:
+            lp = datetime.fromisoformat(last_ping_ts)
+            online = (now - lp) < timedelta(minutes=5)
+        except Exception:
+            pass
+
+    # --- Link status: pending after a mode switch until a new ping arrives ----
+    PENDING_WINDOW = timedelta(minutes=3)
+    mode_switched_ts = get_mode_switched_ts()
+    if mode_switched_ts:
+        try:
+            switched_dt = datetime.fromisoformat(mode_switched_ts)
+            if last_ping_ts and datetime.fromisoformat(last_ping_ts) > switched_dt:
+                link_status = "online"   # ping received after mode switch — confirmed
+            elif (now - switched_dt) < PENDING_WINDOW:
+                link_status = "pending"  # switched recently, waiting for first contact
+            else:
+                link_status = "offline"  # 3 min elapsed, nothing heard in new mode
+        except Exception:
+            link_status = "online" if online else "offline"
+    else:
+        link_status = "online" if online else "offline"
+
+    # --- Main pump cycle detection from outlet alerts -------------------------
+    # Only process type-105 alerts for run detection; other types are alerts/faults.
+    # value = AC current in milliamps: 0 → OFF, >0 → ON (running, value = mA)
+    main_pump_runs = []
+    pending_start  = None   # ts string when pump turned ON
+    peak_mamp      = 0      # track peak current during a run
+
+    for alert in outlet_alerts:
+        if alert.get("type") != 105:
+            continue        # skip non-current alerts for run detection
+        on   = bool(alert["value"])
+        mamp = alert.get("mamp", 0) or 0
+        if on and pending_start is None:
+            pending_start = alert["ts"]
+            peak_mamp = mamp
+        elif on and pending_start is not None:
+            # Still running — update peak current
+            if mamp > peak_mamp:
+                peak_mamp = mamp
+        elif not on and pending_start is not None:
+            # Pump stopped — compute duration
+            try:
+                t_start = datetime.fromisoformat(pending_start)
+                t_stop  = datetime.fromisoformat(alert["ts"])
+                duration_s = round((t_stop - t_start).total_seconds())
+            except Exception:
+                duration_s = None
+            main_pump_runs.append({
+                "ts":        alert["ts"],   # when it stopped
+                "ts_start":  pending_start,
+                "pump":      "main",
+                "motor":     "STOPPED",
+                "duration":  duration_s,
+                "gallons":   duration_s,    # 1 gal/sec approximation
+                "peak_mamp": peak_mamp,
+                "amps":      round(peak_mamp / 1000, 2) if peak_mamp else None,
+            })
+            pending_start = None
+            peak_mamp     = 0
+
+    # If pump is currently ON, add a synthetic "RUNNING" entry
+    if pending_start is not None:
+        main_pump_runs.append({
+            "ts":        pending_start,
+            "ts_start":  pending_start,
+            "pump":      "main",
+            "motor":     "RUNNING",
+            "duration":  None,
+            "gallons":   None,
+            "peak_mamp": peak_mamp,
+            "amps":      round(peak_mamp / 1000, 2) if peak_mamp else None,
+        })
+
+    # --- Correlate water sensor triggers with backup runs --------------------
+    # The trigger event (high_water/low_water) arrives up to ~60s before the run.
+    def find_trigger(run_ts):
+        # High water sensor sends a {"high_water":1} event before the run.
+        # Low water sensor triggers silently — no preceding event.
+        for t in reversed(triggers):
+            if t["ts"] <= run_ts and t["active"]:
+                try:
+                    diff = (datetime.fromisoformat(run_ts) - datetime.fromisoformat(t["ts"])).total_seconds()
+                    if diff <= 90:
+                        return t["type"]   # "high_water"
+                except Exception:
+                    pass
+        return "low_water"   # no trigger event → low water sensor
+
+    # Build combined run list from bbs_json (primary source) + outlet-alert-derived runs
+    combined_runs = []
+    for r in backup_runs:
+        combined_runs.append({
+            "ts":        r["ts"],
+            "ts_start":  r["ts"],
+            "pump":      "backup",
+            "motor":     "STOPPED",
+            "duration":  r.get("duration"),
+            "ticks":     r.get("ticks"),
+            "gallons":   r.get("gallons"),
+            "amps":      r.get("amps"),
+            "battery_v": r.get("battery_v"),
+            "loaded_v":  r.get("loaded_v"),
+            "trigger":   find_trigger(r["ts"]),
+        })
+    for r in main_bbs_runs:
+        combined_runs.append({
+            "ts":        r["ts"],
+            "ts_start":  r["ts"],
+            "pump":      "main",
+            "motor":     "STOPPED",
+            "duration":  r.get("duration"),
+            "ticks":     r.get("ticks"),
+            "gallons":   r.get("gallons"),
+            "amps":      r.get("amps"),
+            "battery_v": r.get("battery_v"),
+            "loaded_v":  r.get("loaded_v"),
+        })
+    for r in main_pump_runs:
+        combined_runs.append(r)
+
+    combined_runs.sort(key=lambda r: r["ts"], reverse=True)
+
+    # --- Server-side filters (applied before slicing for the response) --------
+    filtered_runs = combined_runs
+    if filter_pump:
+        filtered_runs = [r for r in filtered_runs if r.get("pump") == filter_pump]
+    if filter_date:
+        filtered_runs = [r for r in filtered_runs
+                         if utc_ts_to_local_date(r["ts"], tz_offset_minutes) == filter_date]
+
+    # --- Today's stats --------------------------------------------------------
+    # Convert UTC "now" to the user's local date using the browser's tz offset.
+    # tz_offset_minutes: JS getTimezoneOffset() e.g. EDT=240 → local = UTC - 240min
+    local_now = now - timedelta(minutes=tz_offset_minutes)
+    today = local_now.date().isoformat()
+
+    def ts_local_date(ts):
+        return utc_ts_to_local_date(ts, tz_offset_minutes)
+
+    # bbs_json is the primary source for both pumps (motor=1=main, motor=0=backup)
+    main_runs_today   = [r for r in main_bbs_runs if ts_local_date(r["ts"]) == today]
+    backup_runs_today = [r for r in backup_runs   if ts_local_date(r["ts"]) == today]
+
+    total_main_runtime_today   = round(sum(r["duration"] for r in main_runs_today   if r.get("duration") is not None), 1)
+    total_backup_runtime_today = round(sum(r["duration"] for r in backup_runs_today if r.get("duration") is not None), 1)
+    total_main_gallons_today   = round(sum(r["gallons"]  for r in main_runs_today   if r.get("gallons")  is not None), 1)
+    total_backup_gallons_today = round(sum(r["gallons"]  for r in backup_runs_today if r.get("gallons")  is not None), 1)
+
+    # --- Backup battery voltage from latest bbs_json STOPPED event ---------------
+    last_backup_battery_v = None
+    last_backup_loaded_v  = None
+    for r in reversed(backup_runs):
+        if r["motor"] == "STOPPED":
+            last_backup_battery_v = r.get("battery_v")
+            last_backup_loaded_v  = r.get("loaded_v")
+            break
+
+    # RSSI history — last 60 RSSI pings for chart
+    rssi_history = [{"ts": p["ts"], "rssi": p["rssi"]} for p in rssi_pings[-60:]]
+
+    # Merge bbs_json faults + non-105 outlet alerts into a single fault/alert log
+    all_faults = sorted(
+        faults + alerts,
+        key=lambda x: x["ts"]
+    )
+
+    # --- Operating status: last pump that ran -----------------------------------
+    last_run = combined_runs[0] if combined_runs else None
+    if last_run:
+        op_status = {
+            "pump":    last_run["pump"],
+            "ts":      last_run["ts"],
+            "trigger": last_run.get("trigger"),
+        }
+    else:
+        op_status = None
+
+    return {
+        "online":              online,
+        "link_status":         link_status,
+        "mode_switched_ts":    mode_switched_ts,
+        "last_ping_ts":        last_ping_ts,
+        "last_rssi":           last_rssi,
+        "last_battery_v":           last_battery_v,
+        "last_backup_battery_v":    last_backup_battery_v,
+        "last_backup_loaded_v":     last_backup_loaded_v,
+        "main_runs_today":     len(main_runs_today),
+        "backup_runs_today":   len(backup_runs_today),
+        "total_main_runtime_today":    total_main_runtime_today,
+        "total_backup_runtime_today":  total_backup_runtime_today,
+        "total_main_gallons_today":    total_main_gallons_today,
+        "total_backup_gallons_today":  total_backup_gallons_today,
+        "op_status":           op_status,
+        "rssi_history":        rssi_history,
+        "pump_runs":           filtered_runs[:200],
+        "unknowns":            list(reversed(unknowns[-50:])),
+        "server_time":         now.isoformat(),
+    }
+
+# ---------------------------------------------------------------------------
+
+TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PumpSleeper</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117; --card: #1a1d27; --border: #2a2d3a;
+    --text: #e2e8f0; --muted: #8892a4; --green: #22c55e;
+    --red: #ef4444; --yellow: #f59e0b; --blue: #3b82f6; --purple: #a855f7;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; }
+  header { display: flex; align-items: center; justify-content: space-between; padding: 16px 24px;
+           border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 18px; font-weight: 600; letter-spacing: 0.5px; }
+  header h1 span { color: var(--blue); }
+  #refresh-info { font-size: 12px; color: var(--muted); }
+  .mode-toggle { display: flex; align-items: center; gap: 10px; }
+  .mode-btn { padding: 6px 14px; border-radius: 6px; border: 1px solid var(--border);
+              font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+  .mode-btn.active-proxy    { background: rgba(34,197,94,0.15);  color: var(--green); border-color: var(--green); }
+  .mode-btn.active-takeover { background: rgba(239,68,68,0.15);  color: var(--red);   border-color: var(--red); }
+  .mode-btn.inactive { background: transparent; color: var(--muted); }
+  .mode-btn:hover { opacity: 0.8; }
+  .grid { display: grid; gap: 16px; padding: 20px 24px; }
+  .stats { grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); margin-bottom: 8px; }
+  .stat-value { font-size: 26px; font-weight: 700; }
+  .stat-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+  .dot.online { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .dot.offline { background: var(--red); }
+  .dot.pending { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+  .section-title { font-size: 13px; font-weight: 600; color: var(--muted);
+                   text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 12px; }
+  .chart-wrap { position: relative; height: 200px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; padding: 8px 10px; color: var(--muted); font-weight: 500;
+       font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px;
+       border-bottom: 1px solid var(--border); }
+  td { padding: 8px 10px; border-bottom: 1px solid var(--border); color: var(--text); }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .badge.running  { background: rgba(34,197,94,0.15);  color: var(--green); }
+  .badge.stopped  { background: rgba(59,130,246,0.15);  color: var(--blue); }
+  .badge.fault    { background: rgba(239,68,68,0.15);   color: var(--red); }
+  .badge.cleared  { background: rgba(34,197,94,0.15);   color: var(--green); }
+  .badge.unknown  { background: rgba(168,85,247,0.15);  color: var(--purple); }
+  .badge.main     { background: rgba(59,130,246,0.12);  color: var(--blue); }
+  .badge.backup   { background: rgba(245,158,11,0.15);  color: var(--yellow); }
+  .empty { color: var(--muted); font-style: italic; padding: 12px 10px; }
+  .two-col { grid-template-columns: 1fr 1fr; }
+  @media (max-width: 700px) { .two-col { grid-template-columns: 1fr; } }
+  .scroll-table { max-height: 280px; overflow-y: auto; }
+  .scroll-table::-webkit-scrollbar { width: 4px; }
+  .scroll-table::-webkit-scrollbar-track { background: transparent; }
+  .scroll-table::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+  .body-preview { font-family: monospace; font-size: 11px; color: var(--muted);
+                  max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .copy-btn { background: rgba(59,130,246,0.15); color: var(--blue); border: none;
+              border-radius: 4px; padding: 2px 8px; font-size: 11px; cursor: pointer; white-space: nowrap; }
+  .copy-btn:hover { background: rgba(59,130,246,0.3); }
+  .copy-btn.copied { background: rgba(34,197,94,0.15); color: var(--green); }
+  .body-expand { background: var(--bg); border-top: 1px solid var(--border); }
+  .body-expand td { padding: 10px; font-family: monospace; font-size: 12px;
+                    white-space: pre-wrap; word-break: break-all; color: var(--text); }
+  /* Collapsible widgets */
+  .widget-header { display:flex; align-items:center; justify-content:space-between;
+                   cursor:pointer; user-select:none; margin-bottom:12px; }
+  .widget-header:hover .collapse-btn { color: var(--text); }
+  .widget-header .section-title { margin-bottom:0; }
+  .collapse-btn { font-size:12px; color:var(--muted); padding:2px 6px;
+                  border:1px solid var(--border); border-radius:4px;
+                  background:transparent; transition:transform 0.2s; }
+  .collapsible-content { overflow:hidden; transition:opacity 0.15s; }
+  .collapsed .collapsible-content { display:none; }
+  .collapsed .collapse-btn { transform:rotate(-90deg); }
+  .auth-banner { display:none; align-items:center; justify-content:space-between;
+                 gap:12px; padding:10px 24px; background:rgba(245,158,11,0.12);
+                 border-bottom:1px solid rgba(245,158,11,0.4); font-size:13px; }
+  .auth-banner.visible { display:flex; }
+  .auth-banner-msg { color: var(--yellow); }
+  .auth-banner-msg strong { font-weight:700; }
+  .auth-takeover-btn { padding:6px 16px; border-radius:6px; border:1px solid var(--red);
+                       background:rgba(239,68,68,0.15); color:var(--red);
+                       font-size:12px; font-weight:700; cursor:pointer; }
+  .auth-takeover-btn:hover { background:rgba(239,68,68,0.3); }
+  /* Sortable table headers */
+  th.sortable { cursor:pointer; user-select:none; white-space:nowrap; }
+  th.sortable:hover { color: var(--text); }
+  th.sortable .sort-icon { display:inline-block; margin-left:4px; opacity:0.3; font-size:10px; }
+  th.sortable.asc  .sort-icon::after { content:'▲'; opacity:1; color:var(--blue); }
+  th.sortable.desc .sort-icon::after { content:'▼'; opacity:1; color:var(--blue); }
+  th.sortable:not(.asc):not(.desc) .sort-icon::after { content:'⇅'; }
+  /* Filter bar */
+  .filter-bar { display:flex; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap; }
+  .filter-bar label { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; }
+  .filter-input { background:var(--bg); border:1px solid var(--border); border-radius:6px;
+                  color:var(--text); font-size:12px; padding:5px 9px; outline:none; }
+  .filter-input:focus { border-color:var(--blue); }
+  .filter-input option { background:var(--card); }
+  .filter-clear { font-size:11px; color:var(--muted); cursor:pointer; padding:5px 8px;
+                  border:1px solid var(--border); border-radius:6px; background:transparent; }
+  .filter-clear:hover { color:var(--text); border-color:var(--muted); }
+  .filter-count { font-size:11px; color:var(--muted); margin-left:auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Pump<span>Sleeper</span></h1>
+  <div class="mode-toggle">
+    <button class="mode-btn inactive" id="btn-proxy"    onclick="setMode('proxy')">Proxy</button>
+    <button class="mode-btn inactive" id="btn-takeover" onclick="setMode('takeover')">Takeover</button>
+    <span id="refresh-info">Loading…</span>
+  </div>
+</header>
+
+<!-- Auth failure banner -->
+<div class="auth-banner" id="auth-banner">
+  <span class="auth-banner-msg">
+    ⚠ <strong>Real server authentication is failing.</strong>
+    Switch to Takeover mode — the device will re-authenticate against your local server within seconds.
+  </span>
+  <button class="auth-takeover-btn" onclick="setMode('takeover')">Switch to Takeover</button>
+</div>
+
+<!-- Stat cards -->
+<div class="grid stats" id="stat-cards">
+  <div class="card">
+    <div class="stat-label" id="s-link-label">Cloud Link</div>
+    <div class="stat-value" id="s-online">—</div>
+    <div class="stat-sub" id="s-last-ping">—</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Signal (RSSI)</div>
+    <div class="stat-value" id="s-rssi">—</div>
+    <div class="stat-sub">dBm</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Backup Battery (12V)</div>
+    <div class="stat-value" id="s-battery">—</div>
+    <div class="stat-sub" id="s-battery-sub">—</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Main Pump Today</div>
+    <div class="stat-value" id="s-main-runs">—</div>
+    <div class="stat-sub" id="s-main-runtime">—</div>
+  </div>
+  <div class="card">
+    <div class="stat-label">Backup Pump Today</div>
+    <div class="stat-value" id="s-backup-runs">—</div>
+    <div class="stat-sub" id="s-backup-runtime">—</div>
+  </div>
+  <div class="card" id="s-op-card">
+    <div class="stat-label">Operating Status</div>
+    <div class="stat-value" id="s-op-status">—</div>
+    <div class="stat-sub" id="s-op-sub">—</div>
+  </div>
+</div>
+
+<!-- Pump run history -->
+<div class="grid" style="grid-template-columns:1fr; padding-top:0">
+  <div class="card" id="widget-pump">
+    <div class="widget-header" onclick="toggleWidget('widget-pump')">
+      <div class="section-title">Pump Run History</div>
+      <span class="collapse-btn">▼</span>
+    </div>
+    <div class="collapsible-content">
+      <div class="filter-bar">
+        <label>Run Date</label>
+        <input type="date" id="filter-date" class="filter-input" onchange="refresh()">
+        <label>Pump</label>
+        <select id="filter-pump" class="filter-input" onchange="refresh()">
+          <option value="">All</option>
+          <option value="main">Main</option>
+          <option value="backup">Backup</option>
+        </select>
+        <button class="filter-clear" onclick="clearFilters()">Clear</button>
+        <span class="filter-count" id="filter-count"></span>
+      </div>
+      <div class="scroll-table"><table id="pump-table">
+        <thead><tr>
+          <th class="sortable" data-col="ts"        onclick="sortPumpTable(this)">Run Date <span class="sort-icon"></span></th>
+          <th class="sortable" data-col="pump"      onclick="sortPumpTable(this)">Pump <span class="sort-icon"></span></th>
+          <th class="sortable" data-col="motor"     onclick="sortPumpTable(this)">State <span class="sort-icon"></span></th>
+          <th class="sortable" data-col="duration"  onclick="sortPumpTable(this)">Duration <span class="sort-icon"></span></th>
+          <th class="sortable" data-col="gallons"   onclick="sortPumpTable(this)">Est. Gallons <span class="sort-icon"></span></th>
+          <th class="sortable" data-col="amps"      onclick="sortPumpTable(this)">Current <span class="sort-icon"></span></th>
+          <th class="sortable" data-col="battery_v" onclick="sortPumpTable(this)">Batt V <span class="sort-icon"></span></th>
+          <th class="sortable" data-col="loaded_v"  onclick="sortPumpTable(this)">Loaded V <span class="sort-icon"></span></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </div>
+  </div>
+</div>
+
+<!-- RSSI chart -->
+<div class="grid" style="grid-template-columns:1fr; padding-top:0">
+  <div class="card" id="widget-rssi">
+    <div class="widget-header" onclick="toggleWidget('widget-rssi')">
+      <div class="section-title">Signal Strength History</div>
+      <span class="collapse-btn">▼</span>
+    </div>
+    <div class="collapsible-content">
+      <div class="chart-wrap"><canvas id="rssi-chart"></canvas></div>
+    </div>
+  </div>
+</div>
+
+<!-- Unhandled requests (collapsed by default) -->
+<div class="grid" style="grid-template-columns:1fr; padding-top:0">
+  <div class="card collapsed" id="widget-unknown">
+    <div class="widget-header" onclick="toggleWidget('widget-unknown')">
+      <div class="section-title">Unhandled Requests</div>
+      <span class="collapse-btn">▼</span>
+    </div>
+    <div class="collapsible-content">
+      <div class="scroll-table"><table id="unknown-table">
+        <thead><tr><th>Time</th><th>Method</th><th>Path</th><th>Body</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </div>
+  </div>
+</div>
+
+<script>
+let rssiChart = null;
+let _pumpRuns = [];
+let _sortCol  = 'ts';
+let _sortDir  = 'desc';
+let _lastPingTs      = null;
+let _modeSwitchedTs  = null;
+let _linkStatus      = 'offline';
+const PING_INTERVAL_MS  = 2 * 60 * 1000;   // ~2 min between pings
+const PENDING_WINDOW_MS = 3 * 60 * 1000;   // 3 min pending before offline
+
+function updatePendingCountdown() {
+  if (_linkStatus !== 'pending') return;
+  const pingSub = document.getElementById('s-last-ping');
+  if (!pingSub) return;
+
+  // Estimate next ping from last known ping + 2 min interval
+  const nextExpected = _lastPingTs ? new Date(_lastPingTs).getTime() + PING_INTERVAL_MS : null;
+  const now = Date.now();
+
+  if (nextExpected && nextExpected > now) {
+    const secsLeft = Math.ceil((nextExpected - now) / 1000);
+    const m = Math.floor(secsLeft / 60);
+    const s = secsLeft % 60;
+    pingSub.textContent = 'Expected in ' + (m > 0 ? m + 'm ' : '') + s + 's';
+  } else if (_modeSwitchedTs) {
+    // Past expected — check if still within the 3-min pending window
+    const elapsed = now - new Date(_modeSwitchedTs).getTime();
+    const secsLeft = Math.ceil((PENDING_WINDOW_MS - elapsed) / 1000);
+    if (secsLeft > 0) {
+      const m = Math.floor(secsLeft / 60);
+      const s = secsLeft % 60;
+      pingSub.textContent = 'Overdue — offline in ' + (m > 0 ? m + 'm ' : '') + s + 's';
+    } else {
+      pingSub.textContent = 'No contact — checking…';
+    }
+  } else {
+    pingSub.textContent = 'Waiting for first contact…';
+  }
+}
+
+// Tick the countdown every second while pending
+setInterval(updatePendingCountdown, 1000);
+
+function sortPumpTable(th) {
+  const col = th.dataset.col;
+  _sortDir = (_sortCol === col && _sortDir === 'desc') ? 'asc' : 'desc';
+  _sortCol = col;
+  document.querySelectorAll('#pump-table th.sortable').forEach(h => {
+    h.classList.remove('asc', 'desc');
+    if (h.dataset.col === _sortCol) h.classList.add(_sortDir);
+  });
+  renderPumpTable();
+}
+
+function clearFilters() {
+  document.getElementById('filter-date').value = '';
+  document.getElementById('filter-pump').value = '';
+  refresh();
+}
+
+function toggleWidget(id) {
+  document.getElementById(id).classList.toggle('collapsed');
+}
+
+function renderPumpTable() {
+  // Sorting only — filtering is done server-side
+  let rows = _pumpRuns.slice();
+  rows.sort((a, b) => {
+    let av = a[_sortCol], bv = b[_sortCol];
+    if (av === null || av === undefined) av = _sortDir === 'asc' ? Infinity : -Infinity;
+    if (bv === null || bv === undefined) bv = _sortDir === 'asc' ? Infinity : -Infinity;
+    if (typeof av === 'string') return _sortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+    return _sortDir === 'asc' ? av - bv : bv - av;
+  });
+
+  document.getElementById('filter-count').textContent = rows.length + ' runs';
+
+  setTbody('pump-table', rows.map(r => {
+    const gallons  = (r.motor === 'STOPPED' && r.gallons   != null) ? r.gallons   + ' gal' : '—';
+    const dur      = r.duration  != null ? r.duration  + 's' : '—';
+    const amps     = r.amps      != null ? r.amps      + ' A'  : '—';
+    const battV    = r.battery_v != null ? r.battery_v + ' V'  : '—';
+    const loadedV  = r.loaded_v  != null ? r.loaded_v  + ' V'  : '—';
+    const triggerLabel = (r.pump === 'backup' && r.trigger)
+      ? '<br><span style="font-size:10px;color:var(--muted)">' + r.trigger.replace('_', ' ') + '</span>'
+      : '';
+    return '<tr>' +
+      '<td>' + fmtTs(r.ts) + '</td>' +
+      '<td><span class="badge ' + (r.pump || 'main') + '">' + (r.pump || 'main').toUpperCase() + '</span>' + triggerLabel + '</td>' +
+      '<td><span class="badge ' + r.motor.toLowerCase() + '">' + r.motor + '</span></td>' +
+      '<td>' + dur + '</td>' +
+      '<td>' + gallons + '</td>' +
+      '<td>' + amps + '</td>' +
+      '<td>' + battV + '</td>' +
+      '<td>' + loadedV + '</td>' +
+      '</tr>';
+  }));
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function toggleBody(rowId) {
+  const row = document.getElementById(rowId);
+  if (row) row.style.display = row.style.display === 'none' ? '' : 'none';
+}
+
+function copyBody(btn, rowId) {
+  const el = document.getElementById('btext-' + rowId);
+  if (!el) return;
+  const text = el.textContent;
+  const done = () => {
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
+  };
+  // navigator.clipboard requires HTTPS; fall back to execCommand for HTTP (local Pi)
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(done).catch(() => execCopy(text, done));
+  } else {
+    execCopy(text, done);
+  }
+}
+
+function execCopy(text, done) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  try { document.execCommand('copy'); done(); } catch(e) {}
+  document.body.removeChild(ta);
+}
+
+function fmtTs(ts) {
+  if (!ts) return '—';
+  try {
+    return new Date(ts).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  } catch { return ts; }
+}
+
+function fmtAgo(ts) {
+  if (!ts) return '';
+  try {
+    const diff = Math.floor((Date.now() - new Date(ts)) / 1000);
+    if (diff < 60) return diff + 's ago';
+    if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+    return Math.floor(diff/3600) + 'h ago';
+  } catch { return ''; }
+}
+
+function setTbody(tableId, rows) {
+  const tb = document.querySelector('#' + tableId + ' tbody');
+  tb.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="10" class="empty">No data yet</td></tr>';
+}
+
+function update(d) {
+  // Dynamic link label based on mode
+  document.getElementById('s-link-label').textContent =
+    d.mode === 'takeover' ? 'Local Link' : 'Cloud Link';
+
+  // Device link status card
+  _linkStatus     = d.link_status || (d.online ? 'online' : 'offline');
+  _lastPingTs     = d.last_ping_ts || null;
+  _modeSwitchedTs = d.mode_switched_ts || null;
+
+  const onEl = document.getElementById('s-online');
+  const statusLabel = _linkStatus === 'online'  ? 'Online'
+                    : _linkStatus === 'pending' ? 'Pending…'
+                    : 'Offline';
+  onEl.innerHTML = '<span class="dot ' + _linkStatus + '"></span>' + statusLabel;
+
+  const pingSub = document.getElementById('s-last-ping');
+  if (_linkStatus === 'pending') {
+    updatePendingCountdown();   // populate immediately; setInterval keeps it ticking
+  } else {
+    pingSub.textContent = d.last_ping_ts
+      ? fmtTs(d.last_ping_ts) + ' (' + fmtAgo(d.last_ping_ts) + ')' : 'Never';
+  }
+
+  document.getElementById('s-rssi').textContent = d.last_rssi !== null && d.last_rssi !== undefined ? d.last_rssi : '—';
+  const backupBatt = (d.last_backup_battery_v !== null && d.last_backup_battery_v !== undefined)
+    ? d.last_backup_battery_v.toFixed(3) : '—';
+  document.getElementById('s-battery').textContent = backupBatt;
+  document.getElementById('s-battery-sub').textContent =
+    (d.last_backup_loaded_v !== null && d.last_backup_loaded_v !== undefined)
+      ? 'Loaded: ' + d.last_backup_loaded_v.toFixed(3) + 'V' : '—';
+
+  document.getElementById('s-main-runs').textContent = d.main_runs_today;
+  document.getElementById('s-main-runtime').textContent = d.total_main_runtime_today > 0
+    ? d.total_main_runtime_today + 's · ' + d.total_main_gallons_today + ' gal'
+    : 'No runs today';
+
+  document.getElementById('s-backup-runs').textContent = d.backup_runs_today;
+  document.getElementById('s-backup-runtime').textContent = d.total_backup_runtime_today > 0
+    ? d.total_backup_runtime_today + 's · ' + d.total_backup_gallons_today + ' gal'
+    : 'No runs today';
+
+  // Operating status
+  const opCard = document.getElementById('s-op-card');
+  const opEl   = document.getElementById('s-op-status');
+  const opSub  = document.getElementById('s-op-sub');
+  if (!d.op_status) {
+    opEl.textContent  = 'No data';
+    opSub.textContent = '—';
+    opCard.style.borderColor = '';
+  } else if (d.op_status.pump === 'main') {
+    opEl.innerHTML = '<span style="color:var(--green)">&#x2714; Main Pump</span>';
+    opSub.textContent = 'Last run ' + fmtAgo(d.op_status.ts);
+    opCard.style.borderColor = 'var(--green)';
+  } else {
+    const trig = d.op_status.trigger ? d.op_status.trigger.replace('_', ' ') : 'backup';
+    opEl.innerHTML = '<span style="color:var(--yellow)">&#x26A0; Backup Pump</span>';
+    opSub.textContent = trig + ' · ' + fmtAgo(d.op_status.ts);
+    opCard.style.borderColor = 'var(--yellow)';
+  }
+
+  // RSSI chart
+  const labels = d.rssi_history.map(p => fmtTs(p.ts));
+  const values = d.rssi_history.map(p => p.rssi);
+  if (!rssiChart) {
+    const ctx = document.getElementById('rssi-chart').getContext('2d');
+    rssiChart = new Chart(ctx, {
+      type: 'line',
+      data: { labels, datasets: [{ label: 'RSSI (dBm)', data: values,
+        borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)',
+        pointRadius: 3, pointBackgroundColor: '#3b82f6', tension: 0.3, fill: true }] },
+      options: { responsive: true, maintainAspectRatio: false,
+        scales: {
+          x: { ticks: { color: '#8892a4', maxTicksLimit: 8, maxRotation: 0 }, grid: { color: '#2a2d3a' } },
+          y: { ticks: { color: '#8892a4' }, grid: { color: '#2a2d3a' } }
+        },
+        plugins: { legend: { display: false } }
+      }
+    });
+  } else {
+    rssiChart.data.labels = labels;
+    rssiChart.data.datasets[0].data = values;
+    rssiChart.update('none');
+  }
+
+  // Pump run history — store server result, render (sort only client-side)
+  _pumpRuns = d.pump_runs || [];
+  renderPumpTable();
+
+  // Unknown requests table — expandable body rows
+  const unknownRows = [];
+  d.unknowns.forEach((u, i) => {
+    const rowId = 'unk-' + i;
+    const body = u.body || '';
+    const preview = body.length > 80 ? body.slice(0, 80) + '…' : body;
+    unknownRows.push(
+      '<tr style="cursor:pointer" data-row="' + rowId + '" onclick="toggleBody(this.dataset.row)">' +
+      '<td>' + fmtTs(u.ts) + '</td>' +
+      '<td><span class="badge unknown">' + (u.method || '?') + '</span></td>' +
+      '<td style="font-family:monospace">' + escHtml(u.path || '') + '</td>' +
+      '<td class="body-preview">' + escHtml(preview) + '</td>' +
+      '<td><button class="copy-btn" data-row="' + rowId + '" onclick="event.stopPropagation();copyBody(this,this.dataset.row)">Copy</button></td>' +
+      '</tr>' +
+      '<tr class="body-expand" id="' + rowId + '" style="display:none">' +
+      '<td colspan="5" id="btext-' + rowId + '">' + escHtml(body) + '</td>' +
+      '</tr>'
+    );
+  });
+  setTbody('unknown-table', unknownRows);
+
+  document.getElementById('refresh-info').textContent = 'Updated ' + fmtAgo(d.server_time);
+}
+
+async function refresh() {
+  try {
+    const tzOffset  = new Date().getTimezoneOffset();
+    const filterDate = document.getElementById('filter-date').value;   // YYYY-MM-DD or ''
+    const filterPump = document.getElementById('filter-pump').value;   // 'main'|'backup'|''
+    let url = '/api/data?tz_offset=' + tzOffset;
+    if (filterDate) url += '&filter_date=' + encodeURIComponent(filterDate);
+    if (filterPump) url += '&filter_pump=' + encodeURIComponent(filterPump);
+    const r = await fetch(url);
+    const d = await r.json();
+    update(d);
+  } catch(e) {
+    document.getElementById('refresh-info').textContent = 'Error fetching data';
+  }
+}
+
+function updateModeButtons(d) {
+  const mode     = d.mode || d; // accept full object or bare mode string
+  const proxy    = document.getElementById('btn-proxy');
+  const takeover = document.getElementById('btn-takeover');
+  proxy.className    = 'mode-btn ' + (mode === 'proxy'    ? 'active-proxy'    : 'inactive');
+  takeover.className = 'mode-btn ' + (mode === 'takeover' ? 'active-takeover' : 'inactive');
+
+  // Show auth failure banner only in proxy mode with consecutive failures
+  const banner   = document.getElementById('auth-banner');
+  const failures = d.auth_failures || 0;
+  if (mode === 'proxy' && failures >= 2) {
+    banner.classList.add('visible');
+  } else {
+    banner.classList.remove('visible');
+  }
+}
+
+async function fetchMode() {
+  try {
+    const r = await fetch('/api/mode');
+    const d = await r.json();
+    updateModeButtons(d);
+  } catch(e) {}
+}
+
+async function setMode(mode) {
+  try {
+    const r = await fetch('/api/mode', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({mode})
+    });
+    const d = await r.json();
+    // Refresh data immediately so link_status flips to pending without waiting
+    await Promise.all([fetchMode(), refresh()]);
+  } catch(e) {
+    alert('Failed to switch mode — is the server running?');
+  }
+}
+
+refresh();
+fetchMode();
+setInterval(refresh, 30000);
+setInterval(fetchMode, 10000);
+</script>
+</body>
+</html>"""
+
+@app.route("/api/mode", methods=["GET"])
+def api_mode_get():
+    try:
+        r = rlib.get(f"{SERVER_URL}/api/mode", timeout=3)
+        return jsonify(r.json())
+    except Exception:
+        return jsonify({"mode": "unknown", "error": "server unreachable"}), 502
+
+@app.route("/api/mode", methods=["POST"])
+def api_mode_set():
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        r = rlib.post(f"{SERVER_URL}/api/mode", json=body, timeout=3)
+        return jsonify(r.json()), r.status_code
+    except Exception:
+        return jsonify({"error": "server unreachable"}), 502
+
+@app.route("/")
+def index():
+    return render_template_string(TEMPLATE)
+
+@app.route("/api/data")
+def api_data():
+    from db import get_mode
+    events = load_events()
+    try:
+        tz_offset_minutes = int(request.args.get("tz_offset", 0))
+    except (TypeError, ValueError):
+        tz_offset_minutes = 0
+    filter_date = request.args.get("filter_date", "").strip() or None
+    filter_pump = request.args.get("filter_pump", "").strip() or None
+    data = compute_data(events,
+                        tz_offset_minutes=tz_offset_minutes,
+                        filter_date=filter_date,
+                        filter_pump=filter_pump)
+    data["mode"] = get_mode()
+    return jsonify(data)
+
+if __name__ == "__main__":
+    init_db()
+    app.run(host="0.0.0.0", port=8080, debug=False)
