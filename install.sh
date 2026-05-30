@@ -8,7 +8,7 @@
 #  optional Home Assistant MQTT integration.
 #
 #  Usage:
-#    curl -fsSL https://raw.githubusercontent.com/your-repo/pumpsleeper/main/install.sh | bash
+#    curl -fsSL https://raw.githubusercontent.com/pgoutsos/pumpsleeper/main/install.sh | bash
 #  Or:
 #    chmod +x install.sh && sudo ./install.sh
 # =============================================================================
@@ -162,7 +162,7 @@ if [[ -f "$SCRIPT_DIR/app/server.py" ]]; then
     cp "$SCRIPT_DIR/app/mqtt.py"      "$INSTALL_DIR/"
 else
     info "Downloading app files from GitHub..."
-    BASE_URL="https://raw.githubusercontent.com/your-repo/pumpsleeper/main/app"
+    BASE_URL="https://raw.githubusercontent.com/pgoutsos/pumpsleeper/main/app"
     curl -fsSL "$BASE_URL/server.py"    -o "$INSTALL_DIR/server.py"
     curl -fsSL "$BASE_URL/dashboard.py" -o "$INSTALL_DIR/dashboard.py"
     curl -fsSL "$BASE_URL/db.py"        -o "$INSTALL_DIR/db.py"

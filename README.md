@@ -30,7 +30,7 @@ This is the easiest path. One script sets up everything: hotspot, iptables inter
 
 ```bash
 # Download and run the installer
-curl -fsSL https://raw.githubusercontent.com/your-repo/pumpsleeper/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/pgoutsos/pumpsleeper/main/install.sh | sudo bash
 ```
 
 Or clone the repo first:
