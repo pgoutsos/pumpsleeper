@@ -112,6 +112,47 @@ def get_mode_switched_ts():
 
 
 # ---------------------------------------------------------------------------
+# Device tracking
+# ---------------------------------------------------------------------------
+def get_device_ip() -> str:
+    """Return the last known hotspot IP of the PumpSpy device, or None."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key = 'device_ip'"
+        ).fetchone()
+    return row["value"] if row else None
+
+def set_device_ip(ip: str):
+    """Persist the device's hotspot IP address."""
+    with _write_lock:
+        with _connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('device_ip', ?)", (ip,)
+            )
+            conn.commit()
+
+def get_hotspot_connected() -> bool:
+    """Return True/False for hotspot connection status, or None if never checked."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key = 'hotspot_connected'"
+        ).fetchone()
+    if not row:
+        return None
+    return row["value"] == "1"
+
+def set_hotspot_connected(connected: bool):
+    """Persist the result of the most recent hotspot presence check."""
+    with _write_lock:
+        with _connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('hotspot_connected', ?)",
+                ("1" if connected else "0",)
+            )
+            conn.commit()
+
+
+# ---------------------------------------------------------------------------
 # Write
 # ---------------------------------------------------------------------------
 def record(kind: str, payload: dict) -> str:

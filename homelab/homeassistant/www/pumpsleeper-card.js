@@ -29,7 +29,8 @@
  *          loaded_voltage:       sensor.pumpsleeper_backup_loaded_voltage
  */
 
-const PENDING_WINDOW_MS = 3 * 60 * 1000;  // 3 minutes, same as web dashboard
+const PENDING_WINDOW_MS = 3 * 60 * 1000;   // 3 minutes, same as web dashboard
+const PING_STALE_MS     = 10 * 60 * 1000;  // 10 minutes = 5 missed 2-min pings → offline
 
 class PumpSleeperCard extends HTMLElement {
   constructor() {
@@ -106,8 +107,8 @@ class PumpSleeperCard extends HTMLElement {
     const switchedMs = new Date(modeSwitchedTs).getTime();
     const pingMs     = this._isUnknown(lastPingTs) ? 0 : new Date(lastPingTs).getTime();
 
-    if (pingMs > switchedMs) {
-      return 'online';   // device has pinged since the last mode switch
+    if (pingMs > switchedMs && (now - pingMs) < PING_STALE_MS) {
+      return 'online';   // device has pinged since the last mode switch AND recently
     }
     if ((now - switchedMs) < PENDING_WINDOW_MS) {
       return 'pending';  // within 3-minute window, waiting for first ping

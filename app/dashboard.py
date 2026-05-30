@@ -5,12 +5,15 @@ Reads events.jsonl written by server.py and serves a live monitoring dashboard.
 """
 
 import os
+import subprocess
+import threading
 import requests as rlib
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, request, render_template_string
-from db import load_events, init_db, get_mode_switched_ts
+from db import load_events, init_db, get_mode_switched_ts, get_device_ip, get_hotspot_connected
 
-SERVER_URL = os.environ.get("PUMPSPY_SERVER_URL", "http://127.0.0.1:8081")
+SERVER_URL    = os.environ.get("PUMPSPY_SERVER_URL", "http://127.0.0.1:8081")
+HOTSPOT_CON   = os.environ.get("PUMPSLEEPER_HOTSPOT_CON", "Hotspot")
 
 app = Flask(__name__)
 
@@ -152,16 +155,29 @@ def compute_data(events, tz_offset_minutes: int = 0,
 
     # --- Link status: pending after a mode switch until a new ping arrives ----
     PENDING_WINDOW = timedelta(minutes=3)
+    PING_STALE     = timedelta(minutes=10)   # 5 missed 2-min pings → offline
     mode_switched_ts = get_mode_switched_ts()
-    if mode_switched_ts:
+
+    # If the hotspot checker has confirmed the device is not reachable on the
+    # WiFi network, don't let a stale ping timestamp keep it showing as "online".
+    _hotspot_ok = get_hotspot_connected()   # True / False / None
+    if _hotspot_ok is False and not online:
+        link_status = "offline"
+    elif mode_switched_ts:
         try:
             switched_dt = datetime.fromisoformat(mode_switched_ts)
-            if last_ping_ts and datetime.fromisoformat(last_ping_ts) > switched_dt:
-                link_status = "online"   # ping received after mode switch — confirmed
+            if last_ping_ts:
+                lp_dt = datetime.fromisoformat(last_ping_ts)
+                if lp_dt > switched_dt and (now - lp_dt) < PING_STALE:
+                    link_status = "online"   # recent ping after mode switch — confirmed
+                elif (now - switched_dt) < PENDING_WINDOW:
+                    link_status = "pending"  # switched recently, waiting for first contact
+                else:
+                    link_status = "offline"  # pings are stale or pre-date the switch
             elif (now - switched_dt) < PENDING_WINDOW:
-                link_status = "pending"  # switched recently, waiting for first contact
+                link_status = "pending"
             else:
-                link_status = "offline"  # 3 min elapsed, nothing heard in new mode
+                link_status = "offline"
         except Exception:
             link_status = "online" if online else "offline"
     else:
@@ -327,6 +343,8 @@ def compute_data(events, tz_offset_minutes: int = 0,
     return {
         "online":              online,
         "link_status":         link_status,
+        "device_ip":           get_device_ip(),
+        "hotspot_connected":   get_hotspot_connected(),
         "mode_switched_ts":    mode_switched_ts,
         "last_ping_ts":        last_ping_ts,
         "last_rssi":           last_rssi,
@@ -459,6 +477,14 @@ TEMPLATE = """<!DOCTYPE html>
                   border:1px solid var(--border); border-radius:6px; background:transparent; }
   .filter-clear:hover { color:var(--text); border-color:var(--muted); }
   .filter-count { font-size:11px; color:var(--muted); margin-left:auto; }
+  .cycle-btn { font-size:11px; color:var(--muted); background:transparent;
+               border:1px solid var(--border); border-radius:5px; padding:4px 10px;
+               cursor:pointer; transition:all 0.2s; }
+  .cycle-btn:hover:not(:disabled) { color:var(--yellow); border-color:var(--yellow); }
+  .cycle-btn:disabled { opacity:0.4; cursor:not-allowed; }
+  .cycle-progress { font-size:12px; color:var(--yellow); }
+  .cycle-done { font-size:12px; color:var(--green); }
+  .cycle-error { font-size:12px; color:var(--red); }
 </style>
 </head>
 <body>
@@ -485,7 +511,12 @@ TEMPLATE = """<!DOCTYPE html>
   <div class="card">
     <div class="stat-label" id="s-link-label">Cloud Link</div>
     <div class="stat-value" id="s-online">—</div>
+    <div class="stat-sub" id="s-device-ip" style="font-family:monospace;letter-spacing:0.3px"></div>
     <div class="stat-sub" id="s-last-ping">—</div>
+    <div style="margin-top:10px">
+      <button class="cycle-btn" id="cycle-btn" onclick="cycleHotspot()">↺ Cycle Hotspot</button>
+    </div>
+    <div id="cycle-status" style="display:none;margin-top:8px"></div>
   </div>
   <div class="card">
     <div class="stat-label">Signal (RSSI)</div>
@@ -755,9 +786,26 @@ function update(d) {
                     : 'Offline';
   onEl.innerHTML = '<span class="dot ' + _linkStatus + '"></span>' + statusLabel;
 
+  // Device IP + WiFi badge
+  const ipEl = document.getElementById('s-device-ip');
+  if (d.device_ip) {
+    let wifiMark = '';
+    if (d.hotspot_connected === true)       wifiMark = ' &nbsp;<span style="color:var(--green);font-family:sans-serif">WiFi ✓</span>';
+    else if (d.hotspot_connected === false) wifiMark = ' &nbsp;<span style="color:var(--red);font-family:sans-serif">WiFi ✗</span>';
+    ipEl.innerHTML = d.device_ip + wifiMark;
+  } else {
+    ipEl.textContent = '';
+  }
+
   const pingSub = document.getElementById('s-last-ping');
   if (_linkStatus === 'pending') {
     updatePendingCountdown();   // populate immediately; setInterval keeps it ticking
+  } else if (_linkStatus === 'offline' && d.hotspot_connected === true) {
+    pingSub.textContent = 'On WiFi — not pinging'
+      + (d.last_ping_ts ? ' · last ' + fmtAgo(d.last_ping_ts) : '');
+  } else if (_linkStatus === 'offline' && d.hotspot_connected === false) {
+    pingSub.textContent = 'Not on hotspot'
+      + (d.last_ping_ts ? ' · last seen ' + fmtAgo(d.last_ping_ts) : '');
   } else {
     pingSub.textContent = d.last_ping_ts
       ? fmtTs(d.last_ping_ts) + ' (' + fmtAgo(d.last_ping_ts) + ')' : 'Never';
@@ -908,6 +956,93 @@ async function setMode(mode) {
   }
 }
 
+// ── Hotspot cycle ─────────────────────────────────────────────────────────
+let _cyclePoller = null;
+const CYCLE_DOWN_SECS = 30;
+
+async function cycleHotspot() {
+  if (!confirm('Cycle the WiFi hotspot? The PumpSpy device will disconnect for ~30 seconds then reconnect automatically.')) return;
+  const btn    = document.getElementById('cycle-btn');
+  const status = document.getElementById('cycle-status');
+  btn.disabled = true;
+  status.style.display = '';
+  status.className = 'cycle-progress';
+  status.textContent = 'Starting hotspot cycle…';
+
+  try {
+    await fetch('/api/hotspot/cycle', { method: 'POST' });
+  } catch(e) {
+    status.className = 'cycle-error';
+    status.textContent = 'Failed to start cycle — is the dashboard server running?';
+    btn.disabled = false;
+    return;
+  }
+
+  if (_cyclePoller) clearInterval(_cyclePoller);
+  _cyclePoller = setInterval(async () => {
+    try {
+      const r = await fetch('/api/hotspot/cycle');
+      const s = await r.json();
+      const elapsed = s.elapsed || 0;
+
+      // ── Active phases ──────────────────────────────────────────────────
+      if (s.phase === 'down' || s.phase === 'starting') {
+        const secsLeft = Math.max(0, CYCLE_DOWN_SECS - elapsed);
+        status.className = 'cycle-progress';
+        status.textContent = '📡 Hotspot down — coming back in ' + secsLeft + 's…';
+
+      } else if (s.phase === 'up') {
+        status.className = 'cycle-progress';
+        status.textContent = '📡 Hotspot coming back up…';
+
+      } else if (s.phase === 'checking') {
+        const checkSecs = Math.max(0, elapsed - CYCLE_DOWN_SECS - 3);
+        const wifiMark  = s.wifi_reachable === true  ? ' · WiFi ✓'
+                        : s.wifi_reachable === false ? ' · WiFi ✗'
+                        : '';
+        status.className = 'cycle-progress';
+        status.textContent = '🔍 Checking device' + wifiMark + ' — ' + checkSecs + 's…';
+        refresh();   // keep the dashboard live during the check
+
+      // ── Terminal phases ────────────────────────────────────────────────
+      } else if (s.phase === 'online') {
+        _stopCyclePoller();
+        status.className = 'cycle-done';
+        status.textContent = '✓ Device back online and pinging';
+        btn.disabled = false;
+        refresh();
+        setTimeout(() => { status.style.display = 'none'; }, 10000);
+
+      } else if (s.phase === 'wifi_only') {
+        _stopCyclePoller();
+        status.className = 'cycle-progress';  // amber
+        status.innerHTML = '⚠ Device on WiFi but not pinging HTTP.<br>'
+          + '<span style="font-size:11px;color:var(--muted)">Try power cycling the PumpSpy device.</span>';
+        btn.disabled = false;
+        refresh();
+
+      } else if (s.phase === 'unreachable') {
+        _stopCyclePoller();
+        status.className = 'cycle-error';
+        status.innerHTML = '✗ Device not responding after hotspot cycle.<br>'
+          + '<span style="font-size:11px;color:var(--muted)">Power cycle the PumpSpy device to recover.</span>';
+        btn.disabled = false;
+        refresh();
+
+      } else if (s.phase === 'error') {
+        _stopCyclePoller();
+        status.className = 'cycle-error';
+        status.textContent = '✗ Error: ' + (s.error || 'unknown');
+        btn.disabled = false;
+      }
+    } catch(e) { /* dashboard briefly unreachable during cycle is fine */ }
+  }, 1000);
+}
+
+function _stopCyclePoller() {
+  if (_cyclePoller) { clearInterval(_cyclePoller); _cyclePoller = null; }
+}
+
 refresh();
 fetchMode();
 setInterval(refresh, 30000);
@@ -915,6 +1050,136 @@ setInterval(fetchMode, 10000);
 </script>
 </body>
 </html>"""
+
+# ---------------------------------------------------------------------------
+# Hotspot cycle — runs nmcli in a background thread, UI polls for status
+# ---------------------------------------------------------------------------
+_cycle_lock = threading.Lock()
+_cycle_state = {
+    "running": False, "phase": "idle",
+    "started_at": None, "error": None,
+    "wifi_reachable": None,   # True/False/None after checking phase
+}
+HOTSPOT_DOWN_SECS  = 30
+CHECK_TIMEOUT_SECS = 90   # how long to wait for device to come back
+CHECK_INTERVAL     = 3    # seconds between checks
+
+
+def _ping_ok(ip: str) -> bool:
+    """Return True if the device responds to a single ping."""
+    try:
+        r = subprocess.run(
+            ["ping", "-c", "1", "-W", "2", "-q", ip],
+            capture_output=True, timeout=5,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _has_new_events(since_ts: str) -> bool:
+    """Return True if any device event arrived after since_ts."""
+    try:
+        from db import _connect
+        with _connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM events WHERE ts > ? AND kind != 'unknown' LIMIT 1",
+                (since_ts,)
+            ).fetchone()
+        return row is not None
+    except Exception:
+        return False
+
+
+def _do_hotspot_cycle():
+    import time
+    global _cycle_state
+    started_at = _cycle_state["started_at"]
+    try:
+        # ── 1. Bring hotspot down ──────────────────────────────────────────
+        _cycle_state.update({"phase": "down", "error": None, "wifi_reachable": None})
+        r = subprocess.run(["sudo", "/usr/bin/nmcli", "con", "down", HOTSPOT_CON],
+                           capture_output=True, timeout=10)
+        if r.returncode != 0:
+            raise RuntimeError(
+                "nmcli con down failed: " + (r.stderr.decode().strip() or r.stdout.decode().strip() or f"exit {r.returncode}")
+            )
+
+        # ── 2. Wait ────────────────────────────────────────────────────────
+        for _ in range(HOTSPOT_DOWN_SECS):
+            time.sleep(1)
+
+        # ── 3. Bring hotspot back up ───────────────────────────────────────
+        _cycle_state["phase"] = "up"
+        r = subprocess.run(["sudo", "/usr/bin/nmcli", "con", "up", HOTSPOT_CON],
+                           capture_output=True, timeout=15)
+        if r.returncode != 0:
+            raise RuntimeError(
+                "nmcli con up failed: " + (r.stderr.decode().strip() or r.stdout.decode().strip() or f"exit {r.returncode}")
+            )
+
+        # ── 4. Check whether the device comes back ─────────────────────────
+        _cycle_state["phase"] = "checking"
+        device_ip = get_device_ip()
+        deadline  = time.time() + CHECK_TIMEOUT_SECS
+        wifi_ok   = False
+
+        while time.time() < deadline:
+            time.sleep(CHECK_INTERVAL)
+
+            # Priority 1: HTTP events arriving → fully online
+            if _has_new_events(started_at):
+                _cycle_state.update({"phase": "online", "wifi_reachable": True})
+                return
+
+            # Priority 2: ping responds → WiFi layer OK, app layer not yet
+            if device_ip and _ping_ok(device_ip):
+                wifi_ok = True
+                _cycle_state["wifi_reachable"] = True
+            else:
+                _cycle_state["wifi_reachable"] = wifi_ok  # keep True once seen
+
+        # Timed out — report what we found
+        if wifi_ok:
+            _cycle_state["phase"] = "wifi_only"   # on hotspot, IP works, no HTTP
+        else:
+            _cycle_state["phase"] = "unreachable"  # not reachable at all
+
+    except Exception as exc:
+        _cycle_state["error"] = str(exc)
+        _cycle_state["phase"] = "error"
+    finally:
+        _cycle_state["running"] = False
+
+
+@app.route("/api/hotspot/cycle", methods=["POST"])
+def api_hotspot_cycle():
+    with _cycle_lock:
+        if _cycle_state["running"]:
+            return jsonify({"error": "cycle already in progress", "state": _cycle_state}), 409
+        _cycle_state.update({
+            "running": True,
+            "phase": "starting",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "error": None,
+        })
+    threading.Thread(target=_do_hotspot_cycle, daemon=True).start()
+    return jsonify({"started": True})
+
+
+@app.route("/api/hotspot/cycle", methods=["GET"])
+def api_hotspot_cycle_status():
+    state = dict(_cycle_state)
+    # Include elapsed seconds so the UI can drive the countdown
+    if state["started_at"]:
+        try:
+            elapsed = (datetime.now(timezone.utc) -
+                       datetime.fromisoformat(state["started_at"])).total_seconds()
+            state["elapsed"] = round(elapsed)
+        except Exception:
+            state["elapsed"] = 0
+    return jsonify(state)
+
 
 @app.route("/api/mode", methods=["GET"])
 def api_mode_get():

@@ -32,7 +32,7 @@ import os
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify, Response
 import requests as rlib
-from db import init_db, record, get_mode
+from db import init_db, record, get_mode, set_device_ip, get_device_ip, set_hotspot_connected
 import mqtt
 
 # Persistent session with automatic retry — reuses connections but retries once on
@@ -78,6 +78,7 @@ def _fire_and_forget(method, path, headers, body, query_string):
 # ---------------------------------------------------------------------------
 REAL_SERVER   = os.environ.get("PUMPSPY_REAL_SERVER", "http://206.80.104.221:8081")
 PROXY_TIMEOUT = int(os.environ.get("PUMPSPY_PROXY_TIMEOUT", "8"))
+WIFI_IFACE    = os.environ.get("PUMPSPY_WIFI_IFACE", "wlan0")   # hotspot interface
 
 def proxy_enabled() -> bool:
     """Read current mode from DB on every call — no restart needed to switch."""
@@ -108,7 +109,115 @@ def get_auth_status() -> dict:
     with _auth_lock:
         return dict(_auth_state)
 
+# ---------------------------------------------------------------------------
+# Device IP tracking — record IP from any device-originated request
+# ---------------------------------------------------------------------------
+_device_ip_cache = None
+
+# ---------------------------------------------------------------------------
+# Hotspot presence check — runs in background thread every 30 s
+# ---------------------------------------------------------------------------
+import subprocess as _subprocess
+
+def _check_hotspot_connected(device_ip: str):
+    """
+    Returns True if device is associated with the WiFi hotspot, False if not,
+    None if we cannot determine (e.g. running outside a Pi / iw not available).
+
+    Strategy:
+      1. iw dev <iface> station dump — lists all currently associated WiFi clients
+         by MAC address. This is a Layer-2 check that doesn't require the device
+         to respond to pings.
+      2. ip neigh show dev <iface> — maps MACs to IPs so we can match device_ip.
+      3. Fallback: ping — works anywhere but slightly slower.
+    """
+    # Step 1: get all associated MACs from the AP
+    # iw lives in /usr/sbin which may not be in PATH for service users
+    import shutil as _shutil
+    _iw = _shutil.which("iw") or "/usr/sbin/iw"
+
+    station_macs = set()
+    try:
+        r = _subprocess.run(
+            [_iw, "dev", WIFI_IFACE, "station", "dump"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0:
+            for line in r.stdout.splitlines():
+                if line.strip().startswith("Station "):
+                    station_macs.add(line.split()[1].lower())
+        else:
+            raise RuntimeError(r.stderr.strip())
+    except FileNotFoundError:
+        # iw not installed — fall through to ping
+        pass
+    except Exception as exc:
+        log.debug(f"HOTSPOT  iw check failed: {exc}")
+
+    if station_macs:
+        # Step 2: find which station has device_ip
+        try:
+            r = _subprocess.run(
+                ["ip", "neigh", "show", "dev", WIFI_IFACE],
+                capture_output=True, text=True, timeout=3,
+            )
+            for line in r.stdout.splitlines():
+                parts = line.split()
+                if "lladdr" in parts:
+                    ip  = parts[0]
+                    mac = parts[parts.index("lladdr") + 1].lower()
+                    if ip == device_ip:
+                        return mac in station_macs
+        except Exception as exc:
+            log.debug(f"HOTSPOT  ip neigh failed: {exc}")
+        # device_ip not found in neighbor table → not connected
+        return False
+
+    # Step 3: fallback — ping (works on any OS, less definitive)
+    try:
+        r = _subprocess.run(
+            ["ping", "-c", "1", "-W", "2", "-q", device_ip],
+            capture_output=True, timeout=5,
+        )
+        return r.returncode == 0
+    except Exception:
+        return None   # can't determine
+
+
+def _hotspot_checker_loop():
+    """Background thread: poll hotspot every 30 s and update DB + MQTT."""
+    import time
+    time.sleep(15)   # brief startup delay so DB is ready
+    while True:
+        try:
+            device_ip = get_device_ip()
+            if device_ip:
+                connected = _check_hotspot_connected(device_ip)
+                if connected is not None:
+                    set_hotspot_connected(connected)
+                    mqtt.publish_hotspot_status(connected)
+                    log.debug(f"HOTSPOT  {device_ip}  connected={connected}")
+        except Exception as exc:
+            log.error(f"HOTSPOT  checker error: {exc}")
+        time.sleep(30)
+
+
 app = Flask(__name__)
+
+
+@app.before_request
+def _track_device_ip():
+    """Record the PumpSpy device's hotspot IP from any non-API request."""
+    global _device_ip_cache
+    if request.path.startswith("/api/"):
+        return
+    ip = request.remote_addr
+    if ip and not ip.startswith("127.") and ip != _device_ip_cache:
+        _device_ip_cache = ip
+        set_device_ip(ip)
+        log.info(f"DEVICE  IP: {ip}")
+        mqtt.publish_device_ip(ip)
+
 
 # --- Logging setup -----------------------------------------------------------
 logging.basicConfig(
@@ -469,5 +578,6 @@ if __name__ == "__main__":
     from db import DB_FILE, get_mode
     init_db()
     mqtt.init()
+    _threading.Thread(target=_hotspot_checker_loop, daemon=True, name="hotspot-checker").start()
     log.info(f"PumpSpy local server starting on 0.0.0.0:8081  mode={get_mode()}  real_server={REAL_SERVER}  db={DB_FILE}")
     app.run(host="0.0.0.0", port=8081, debug=False, threaded=True)

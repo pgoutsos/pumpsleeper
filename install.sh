@@ -183,6 +183,7 @@ PUMPSLEEPER_MQTT_HOST=$MQTT_HOST
 PUMPSLEEPER_MQTT_PORT=$MQTT_PORT
 PUMPSLEEPER_MQTT_USER=$MQTT_USER
 PUMPSLEEPER_MQTT_PASSWORD=$MQTT_PASS
+PUMPSLEEPER_HOTSPOT_CON=PumpSleeper-Hotspot
 EOF
 chmod 600 "$INSTALL_DIR/pumpsleeper.env"
 success "Environment file written to $INSTALL_DIR/pumpsleeper.env"
@@ -233,6 +234,14 @@ grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf || echo "net.ipv4.ip_forward=1"
 # Persist iptables rules
 netfilter-persistent save
 success "iptables rules applied and persisted"
+
+# ── sudoers rule for hotspot cycling ─────────────────────────────────────────
+header "Sudoers rule (hotspot cycle)"
+cat > /etc/sudoers.d/pumpsleeper-hotspot <<EOF
+$RUN_USER ALL=(ALL) NOPASSWD: /usr/bin/nmcli con down PumpSleeper-Hotspot, /usr/bin/nmcli con up PumpSleeper-Hotspot
+EOF
+chmod 440 /etc/sudoers.d/pumpsleeper-hotspot
+success "Sudoers rule written for $RUN_USER"
 
 # ── systemd services ──────────────────────────────────────────────────────────
 header "systemd services"

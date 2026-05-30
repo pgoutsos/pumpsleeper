@@ -184,6 +184,15 @@ def _publish_discovery():
         "device_class": "running",
     })
 
+    _disc("binary_sensor", "wifi_connected", {
+        "name":         "Device WiFi Connected",
+        "state_topic":  f"{p}/wifi_connected",
+        "payload_on":   "ON",
+        "payload_off":  "OFF",
+        "device_class": "connectivity",
+        "icon":         "mdi:wifi",
+    })
+
     # ── Signal / power sensors ────────────────────────────────────────────
     _disc("sensor", "rssi", {
         "name":                 "Signal Strength",
@@ -241,6 +250,12 @@ def _publish_discovery():
         "name":        "Operating Status",
         "state_topic": f"{p}/operating_status",
         "icon":        "mdi:pump",
+    })
+
+    _disc("sensor", "device_ip", {
+        "name":        "Device IP",
+        "state_topic": f"{p}/device_ip",
+        "icon":        "mdi:ip-network",
     })
 
     # ── Main pump ─────────────────────────────────────────────────────────
@@ -313,7 +328,7 @@ def _publish_discovery():
         "icon":        "mdi:water-alert",
     })
 
-    log.info("MQTT   auto-discovery published (%d entities)", 15)
+    log.info("MQTT   auto-discovery published (%d entities)", 19)
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +399,16 @@ def publish_mode(mode: str):
     _pub("mode",             mode, retain=True)
     _pub("mode_switched_ts", ts,   retain=True)
     _pub("events/mode_change", {"mode": mode, "ts": ts})
+
+
+def publish_hotspot_status(connected: bool):
+    """Publish WiFi hotspot presence check result."""
+    _pub("wifi_connected", "ON" if connected else "OFF", retain=True)
+
+
+def publish_device_ip(ip: str):
+    """Publish the device's hotspot IP address."""
+    _pub("device_ip", ip, retain=True)
 
 
 # ---------------------------------------------------------------------------
