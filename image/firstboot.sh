@@ -134,8 +134,10 @@ echo "      Done."
 echo "[6/8] Downloading app files from GitHub..."
 mkdir -p "$INSTALL_DIR/data"
 BASE_URL="https://raw.githubusercontent.com/pgoutsos/pumpsleeper/main/app"
-for f in server.py dashboard.py db.py mqtt.py notifications.py; do
-    curl -fsSL "$BASE_URL/$f" -o "$INSTALL_DIR/$f"
+for f in server.py dashboard.py db.py mqtt.py notifications.py updater.py; do
+    echo "      Downloading $f..."
+    curl -fsSL --retry 3 "$BASE_URL/$f" -o "$INSTALL_DIR/$f" \
+        || echo "      WARNING: failed to download $f"
 done
 
 cat > "$INSTALL_DIR/pumpsleeper.env" <<EOF
@@ -222,21 +224,23 @@ StandardError=append:$INSTALL_DIR/data/dashboard.log
 WantedBy=multi-user.target
 EOF
 
-# ── Auto-update timer ─────────────────────────────────────────────────────────
-cp /tmp/pumpsleeper-update.service /etc/systemd/system/pumpsleeper-update.service 2>/dev/null || \
-curl -fsSL "https://raw.githubusercontent.com/pgoutsos/pumpsleeper/main/image/pumpsleeper-update.service" \
-    -o /etc/systemd/system/pumpsleeper-update.service
-curl -fsSL "https://raw.githubusercontent.com/pgoutsos/pumpsleeper/main/image/pumpsleeper-update.timer" \
-    -o /etc/systemd/system/pumpsleeper-update.timer
+# ── Auto-update timer (files baked into image by GitHub Action) ───────────────
+if [[ -f /usr/local/lib/pumpsleeper-update.service ]]; then
+    cp /usr/local/lib/pumpsleeper-update.service /etc/systemd/system/pumpsleeper-update.service
+    cp /usr/local/lib/pumpsleeper-update.timer   /etc/systemd/system/pumpsleeper-update.timer
+fi
 
 # Write the installed version
-TAG=$(curl -fsSL https://api.github.com/repos/pgoutsos/pumpsleeper/releases/latest \
-    | python3 -c "import sys,json; print(json.load(sys.stdin).get('tag_name','unknown'))" 2>/dev/null || echo "unknown")
-echo "$TAG" > "$INSTALL_DIR/VERSION"
+echo "main" > "$INSTALL_DIR/VERSION"
 
 systemctl daemon-reload
-systemctl enable pumpsleeper pumpsleeper-dashboard pumpsleeper-update.timer
-systemctl start pumpsleeper pumpsleeper-dashboard pumpsleeper-update.timer
+systemctl enable pumpsleeper pumpsleeper-dashboard
+systemctl start pumpsleeper pumpsleeper-dashboard
+# Enable update timer only if files exist
+if [[ -f /etc/systemd/system/pumpsleeper-update.timer ]]; then
+    systemctl enable pumpsleeper-update.timer
+    systemctl start pumpsleeper-update.timer
+fi
 echo "      Done."
 
 # ── Disable firstboot service ─────────────────────────────────────────────────
