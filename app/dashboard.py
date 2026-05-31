@@ -495,7 +495,11 @@ TEMPLATE = """<!DOCTYPE html>
   .tab-panel { display:none; }
   .tab-panel.active { display:block; }
   /* Settings page */
-  .settings-grid { display:grid; gap:16px; padding:20px 24px; max-width:700px; }
+  .settings-grid { display:grid; gap:16px; padding:20px 24px;
+                   grid-template-columns: repeat(2, 1fr); }
+  .settings-grid .full-width { grid-column: 1 / -1; }
+  @media (max-width: 768px) { .settings-grid { grid-template-columns: 1fr; }
+    .settings-grid .full-width { grid-column: 1; } }
   .settings-section { font-size:11px; text-transform:uppercase; letter-spacing:0.8px;
                       color:var(--muted); margin:8px 0 4px; }
   .form-row { display:flex; flex-direction:column; gap:4px; }
@@ -658,7 +662,7 @@ TEMPLATE = """<!DOCTYPE html>
 <div class="settings-grid">
 
   <!-- ── Updates ──────────────────────────────────────────────────── -->
-  <div class="card" id="update-card">
+  <div class="card full-width" id="update-card">
     <div class="section-title">Updates</div>
     <div style="display:flex;flex-direction:column;gap:12px;margin-top:4px">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
@@ -764,9 +768,9 @@ TEMPLATE = """<!DOCTYPE html>
   </div>
 
   <!-- ── Triggers ──────────────────────────────────────────────── -->
-  <div class="card">
+  <div class="card full-width">
     <div class="section-title">Notification Triggers</div>
-    <div style="display:flex;flex-direction:column;gap:10px;margin-top:4px">
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;margin-top:4px">
       <label class="toggle-label"><input type="checkbox" id="trigger_backup_pump_ran"> Backup pump ran</label>
       <label class="toggle-label"><input type="checkbox" id="trigger_main_pump_ran"> Main pump ran</label>
       <label class="toggle-label"><input type="checkbox" id="trigger_high_water"> High water alert</label>
@@ -777,7 +781,7 @@ TEMPLATE = """<!DOCTYPE html>
   </div>
 
   <!-- ── Save ──────────────────────────────────────────────────── -->
-  <div style="display:flex;align-items:center;gap:14px">
+  <div class="full-width" style="display:flex;align-items:center;gap:14px">
     <button class="save-btn" onclick="saveSettings()">Save Settings</button>
     <span class="settings-msg" id="save-msg"></span>
     <span id="unsaved-msg" style="display:none;font-size:12px;color:var(--yellow)">⚠ Unsaved changes — save before sending a test</span>
