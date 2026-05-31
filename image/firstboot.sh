@@ -10,7 +10,6 @@
 set -euo pipefail
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-# Pi OS Bookworm uses /boot/firmware; older releases use /boot
 BOOT_DIR="/boot/firmware"
 [[ -d "$BOOT_DIR" ]] || BOOT_DIR="/boot"
 
@@ -31,15 +30,20 @@ echo " $(date)"
 echo "============================================"
 echo ""
 
+# ── Strip Windows line endings from config ────────────────────────────────────
+sed -i 's/\r//' "$CONF_FILE" 2>/dev/null || true
+
 # ── Load config ───────────────────────────────────────────────────────────────
 if [[ ! -f "$CONF_FILE" ]]; then
     echo "ERROR: $CONF_FILE not found. Cannot continue."
-    echo "Please add pumpsleeper.conf to the boot partition and reboot."
     exit 1
 fi
 
 source "$CONF_FILE"
 
+HOME_WIFI_SSID="${HOME_WIFI_SSID:-}"
+HOME_WIFI_PASS="${HOME_WIFI_PASS:-}"
+SSH_PASS="${SSH_PASS:-pumpspy}"
 HOTSPOT_SSID="${HOTSPOT_SSID:-PumpSpyLab}"
 HOTSPOT_PASS="${HOTSPOT_PASS:-pumpspy123}"
 HOTSPOT_IP="${HOTSPOT_IP:-192.168.50.1}"
@@ -49,13 +53,41 @@ MQTT_USER="${MQTT_USER:-}"
 MQTT_PASS="${MQTT_PASS:-}"
 
 echo "Config loaded:"
+echo "  Home WiFi    : ${HOME_WIFI_SSID:-not set}"
 echo "  Hotspot SSID : $HOTSPOT_SSID"
 echo "  Hotspot IP   : $HOTSPOT_IP"
 echo "  MQTT host    : ${MQTT_HOST:-disabled}"
 echo ""
 
+# ── Change default SSH password ───────────────────────────────────────────────
+echo "[1/8] Setting login password..."
+echo "pumpsleeper:${SSH_PASS}" | chpasswd
+echo "      Done."
+
+# ── Connect to home WiFi ──────────────────────────────────────────────────────
+echo "[2/8] Connecting to home WiFi..."
+if [[ -z "$HOME_WIFI_SSID" ]]; then
+    echo "      WARNING: HOME_WIFI_SSID not set in pumpsleeper.conf."
+    echo "      Cannot connect to internet. Install will fail when downloading files."
+else
+    nmcli dev wifi connect "$HOME_WIFI_SSID" password "$HOME_WIFI_PASS" ifname "$WIFI_IFACE" 2>&1 || true
+    echo "      Waiting for network..."
+    for i in $(seq 1 30); do
+        sleep 2
+        if curl -fsSL --max-time 5 https://github.com > /dev/null 2>&1; then
+            echo "      Network ready."
+            break
+        fi
+        if [[ $i -eq 30 ]]; then
+            echo "      ERROR: Could not reach internet after 60 seconds."
+            echo "      Check HOME_WIFI_SSID and HOME_WIFI_PASS in pumpsleeper.conf."
+            exit 1
+        fi
+    done
+fi
+
 # ── System dependencies ───────────────────────────────────────────────────────
-echo "[1/7] Installing system packages..."
+echo "[3/8] Installing system packages..."
 apt-get update -qq
 apt-get install -y -qq \
     python3 python3-pip \
@@ -65,20 +97,20 @@ apt-get install -y -qq \
 echo "      Done."
 
 # ── Python dependencies ───────────────────────────────────────────────────────
-echo "[2/7] Installing Python packages..."
+echo "[4/8] Installing Python packages..."
 pip3 install --break-system-packages --quiet flask waitress requests
 [[ -n "$MQTT_HOST" ]] && pip3 install --break-system-packages --quiet paho-mqtt
 echo "      Done."
 
 # ── Service user ──────────────────────────────────────────────────────────────
-echo "[3/7] Creating service user..."
+echo "[5/8] Creating service user..."
 if ! id "$RUN_USER" &>/dev/null; then
     useradd --system --no-create-home --shell /usr/sbin/nologin "$RUN_USER"
 fi
 echo "      Done."
 
 # ── Install app files ─────────────────────────────────────────────────────────
-echo "[4/7] Downloading app files from GitHub..."
+echo "[6/8] Downloading app files from GitHub..."
 mkdir -p "$INSTALL_DIR/data"
 BASE_URL="https://raw.githubusercontent.com/pgoutsos/pumpsleeper/main/app"
 for f in server.py dashboard.py db.py mqtt.py notifications.py; do
@@ -98,8 +130,7 @@ chown -R "$RUN_USER:$RUN_USER" "$INSTALL_DIR"
 echo "      Done."
 
 # ── WiFi hotspot ──────────────────────────────────────────────────────────────
-echo "[5/7] Configuring WiFi hotspot..."
-nmcli device set "$WIFI_IFACE" managed yes 2>/dev/null || true
+echo "[7/8] Configuring WiFi hotspot..."
 nmcli con delete "PumpSleeper-Hotspot" 2>/dev/null || true
 nmcli con add type wifi ifname "$WIFI_IFACE" con-name "PumpSleeper-Hotspot" \
     autoconnect yes ssid "$HOTSPOT_SSID" \
@@ -111,8 +142,8 @@ nmcli con add type wifi ifname "$WIFI_IFACE" con-name "PumpSleeper-Hotspot" \
 nmcli con up "PumpSleeper-Hotspot"
 echo "      Done."
 
-# ── iptables ──────────────────────────────────────────────────────────────────
-echo "[6/7] Configuring iptables..."
+# ── iptables + sudoers ────────────────────────────────────────────────────────
+echo "[8/8] Configuring iptables and services..."
 iptables -t nat -D PREROUTING -i "$WIFI_IFACE" -p tcp --dport "$SERVER_PORT" \
     -j DNAT --to-destination "${HOTSPOT_IP}:${SERVER_PORT}" 2>/dev/null || true
 iptables -t nat -A PREROUTING -i "$WIFI_IFACE" -p tcp --dport "$SERVER_PORT" \
@@ -123,16 +154,12 @@ sysctl -w net.ipv4.ip_forward=1 > /dev/null
 grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf \
     || echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 netfilter-persistent save
-echo "      Done."
 
-# ── sudoers rule ──────────────────────────────────────────────────────────────
 cat > /etc/sudoers.d/pumpsleeper-hotspot \
     <<< "$RUN_USER ALL=(ALL) NOPASSWD: /usr/bin/nmcli con down PumpSleeper-Hotspot, /usr/bin/nmcli con up PumpSleeper-Hotspot"
 chmod 440 /etc/sudoers.d/pumpsleeper-hotspot
 
 # ── systemd services ──────────────────────────────────────────────────────────
-echo "[7/7] Installing systemd services..."
-
 cat > /etc/systemd/system/pumpsleeper.service <<EOF
 [Unit]
 Description=PumpSleeper proxy server
@@ -179,19 +206,22 @@ systemctl enable pumpsleeper pumpsleeper-dashboard
 systemctl start pumpsleeper pumpsleeper-dashboard
 echo "      Done."
 
-# ── Disable firstboot service so it doesn't run again ────────────────────────
+# ── Disable firstboot service ─────────────────────────────────────────────────
 systemctl disable pumpsleeper-firstboot.service 2>/dev/null || true
-rm -f "$BOOT_DIR/pumpsleeper.conf"   # remove config so passwords don't sit on disk
+
+# ── Remove config from boot partition (contains passwords) ────────────────────
+rm -f "$BOOT_DIR/pumpsleeper.conf"
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 PI_IP=$(hostname -I | awk '{print $1}')
 echo ""
 echo "============================================"
 echo " Installation complete!"
-echo " Dashboard: http://${PI_IP}:${DASHBOARD_PORT}"
-echo " Hotspot:   $HOTSPOT_SSID"
+echo " Dashboard : http://${PI_IP}:${DASHBOARD_PORT}"
+echo " SSH       : ssh pumpsleeper@${PI_IP}"
+echo " Hotspot   : $HOTSPOT_SSID (password: $HOTSPOT_PASS)"
 echo " $(date)"
 echo "============================================"
 echo ""
-echo "This log file will remain here for reference."
 echo "Connect your PumpSpy device to the '$HOTSPOT_SSID' WiFi network."
+echo "This log file will remain here for reference."

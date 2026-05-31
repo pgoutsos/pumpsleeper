@@ -46,28 +46,35 @@ jobs:
 
       - name: Inject firstboot service and config
         run: |
+          # Enable SSH on first boot
+          sudo touch /mnt/boot/ssh
+
+          # Create default user: pumpsleeper / pumpspy
+          HASH=$(echo 'pumpspy' | openssl passwd -6 -stdin)
+          echo "pumpsleeper:${HASH}" | sudo tee /mnt/boot/userconf.txt > /dev/null
+
           # Copy firstboot script into root filesystem
           sudo cp image/firstboot.sh /mnt/root/usr/local/bin/pumpsleeper-firstboot.sh
           sudo chmod +x /mnt/root/usr/local/bin/pumpsleeper-firstboot.sh
 
-          # Create the systemd firstboot service
-          sudo tee /mnt/root/etc/systemd/system/pumpsleeper-firstboot.service > /dev/null <<'EOF'
-          [Unit]
-          Description=PumpSleeper First Boot Setup
-          After=network-online.target firstrun.service
-          Wants=network-online.target
-          ConditionPathExists=/boot/firmware/pumpsleeper.conf
+          # Create the systemd firstboot service (no leading whitespace — bash heredoc requirement)
+          sudo tee /mnt/root/etc/systemd/system/pumpsleeper-firstboot.service > /dev/null <<'SVCEOF'
+[Unit]
+Description=PumpSleeper First Boot Setup
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/boot/firmware/pumpsleeper.conf
 
-          [Service]
-          Type=oneshot
-          ExecStart=/usr/local/bin/pumpsleeper-firstboot.sh
-          RemainAfterExit=yes
-          StandardOutput=journal+console
-          StandardError=journal+console
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pumpsleeper-firstboot.sh
+RemainAfterExit=yes
+StandardOutput=journal+console
+StandardError=journal+console
 
-          [Install]
-          WantedBy=multi-user.target
-          EOF
+[Install]
+WantedBy=multi-user.target
+SVCEOF
 
           # Enable the firstboot service
           sudo ln -sf /etc/systemd/system/pumpsleeper-firstboot.service \
@@ -76,29 +83,33 @@ jobs:
           # Place the config template on the boot partition (FAT32 — user editable)
           sudo cp image/pumpsleeper.conf /mnt/boot/pumpsleeper.conf
 
-          # Place a README on the boot partition so users know what to do
-          sudo tee /mnt/boot/PUMPSLEEPER-SETUP.txt > /dev/null <<'EOF'
-          ================================================
-           PumpSleeper Setup
-          ================================================
+          # Place a README on the boot partition
+          sudo tee /mnt/boot/PUMPSLEEPER-SETUP.txt > /dev/null <<'READMEEOF'
+================================================
+ PumpSleeper Setup
+================================================
 
-          Before booting:
-          1. Open pumpsleeper.conf in a text editor
-          2. Set your hotspot SSID and password
-          3. Optionally set MQTT details for Home Assistant
-          4. Save and eject the SD card
+Before booting:
+1. Open pumpsleeper.conf in a text editor
+2. Set HOME_WIFI_SSID and HOME_WIFI_PASS (your home network)
+3. Set your hotspot SSID and password for the PumpSpy device
+4. Optionally set SSH_PASS to change the default login password
+5. Save and eject the SD card
 
-          On first boot, PumpSleeper will install automatically.
-          Progress is logged to pumpsleeper-install.log on this drive.
-          Installation takes 3-5 minutes depending on internet speed.
+Default SSH login:
+  Username: pumpsleeper
+  Password: pumpspy  (change via SSH_PASS in pumpsleeper.conf)
 
-          Once complete:
-          - Connect your PumpSpy device to your hotspot
-          - Open http://<pi-ip>:8080 for the dashboard
+On first boot, PumpSleeper installs automatically (3-5 minutes).
+Progress is logged to pumpsleeper-install.log on this drive.
 
-          More info: https://github.com/pgoutsos/pumpsleeper
-          ================================================
-          EOF
+Once complete:
+  Dashboard : http://<pi-ip>:8080
+  SSH       : ssh pumpsleeper@<pi-ip>
+
+More info: https://github.com/pgoutsos/pumpsleeper
+================================================
+READMEEOF
 
       - name: Unmount image
         run: |
