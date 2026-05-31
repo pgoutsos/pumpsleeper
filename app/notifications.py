@@ -22,18 +22,25 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Event names (used as keys for per-trigger toggles)
 # ---------------------------------------------------------------------------
-EVENT_BACKUP_PUMP   = "backup_pump_ran"
-EVENT_MAIN_PUMP     = "main_pump_ran"
-EVENT_HIGH_WATER    = "high_water"
-EVENT_DEVICE_OFFLINE = "device_offline"
+EVENT_BACKUP_PUMP      = "backup_pump_ran"
+EVENT_MAIN_PUMP        = "main_pump_ran"
+EVENT_HIGH_WATER       = "high_water"
+EVENT_DEVICE_OFFLINE   = "device_offline"
+EVENT_UPDATE_AVAILABLE = "update_available"
+EVENT_UPDATE_INSTALLED = "update_installed"
 
-ALL_EVENTS = [EVENT_BACKUP_PUMP, EVENT_MAIN_PUMP, EVENT_HIGH_WATER, EVENT_DEVICE_OFFLINE]
+ALL_EVENTS = [
+    EVENT_BACKUP_PUMP, EVENT_MAIN_PUMP, EVENT_HIGH_WATER,
+    EVENT_DEVICE_OFFLINE, EVENT_UPDATE_AVAILABLE, EVENT_UPDATE_INSTALLED,
+]
 
 EVENT_LABELS = {
-    EVENT_BACKUP_PUMP:    "Backup pump ran",
-    EVENT_MAIN_PUMP:      "Main pump ran",
-    EVENT_HIGH_WATER:     "High water alert",
-    EVENT_DEVICE_OFFLINE: "Device offline",
+    EVENT_BACKUP_PUMP:      "Backup pump ran",
+    EVENT_MAIN_PUMP:        "Main pump ran",
+    EVENT_HIGH_WATER:       "High water alert",
+    EVENT_DEVICE_OFFLINE:   "Device offline",
+    EVENT_UPDATE_AVAILABLE: "New version available",
+    EVENT_UPDATE_INSTALLED: "New version installed",
 }
 
 # ---------------------------------------------------------------------------
@@ -177,10 +184,12 @@ def notify(event: str, detail: str = ""):
     detail — optional extra context (e.g. duration, gallons)
     """
     labels = {
-        EVENT_BACKUP_PUMP:    ("Backup pump ran",    "urgent"),
-        EVENT_MAIN_PUMP:      ("Main pump ran",      "default"),
-        EVENT_HIGH_WATER:     ("⚠ High water alert", "urgent"),
-        EVENT_DEVICE_OFFLINE: ("Device offline",     "high"),
+        EVENT_BACKUP_PUMP:      ("Backup pump ran",        "urgent"),
+        EVENT_MAIN_PUMP:        ("Main pump ran",          "default"),
+        EVENT_HIGH_WATER:       ("⚠ High water alert",    "urgent"),
+        EVENT_DEVICE_OFFLINE:   ("Device offline",         "high"),
+        EVENT_UPDATE_AVAILABLE: ("Update available",       "default"),
+        EVENT_UPDATE_INSTALLED: ("Update installed",       "default"),
     }
     title, priority = labels.get(event, (event, "default"))
     body = title + (f"\n\n{detail}" if detail else "")

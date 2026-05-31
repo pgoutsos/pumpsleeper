@@ -657,6 +657,34 @@ TEMPLATE = """<!DOCTYPE html>
 <div id="tab-settings" class="tab-panel">
 <div class="settings-grid">
 
+  <!-- ── Updates ──────────────────────────────────────────────────── -->
+  <div class="card" id="update-card">
+    <div class="section-title">Updates</div>
+    <div style="display:flex;flex-direction:column;gap:12px;margin-top:4px">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+        <div style="font-size:13px">
+          Current version: <strong id="current-version" style="color:var(--blue)">—</strong>
+          &nbsp;&nbsp;
+          Latest: <strong id="latest-version" style="color:var(--muted)">checking…</strong>
+        </div>
+        <button class="test-btn" id="check-update-btn" onclick="checkForUpdates()">Check now</button>
+      </div>
+      <label class="toggle-label">
+        <input type="checkbox" id="auto_update" onchange="saveAutoUpdate()">
+        Automatically install updates overnight
+      </label>
+      <div id="release-notes-box" style="display:none">
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Release notes</div>
+        <pre id="release-notes" style="font-family:inherit;font-size:12px;color:var(--text);white-space:pre-wrap;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;max-height:200px;overflow-y:auto"></pre>
+      </div>
+      <div id="update-status-row" style="display:none;align-items:center;gap:12px">
+        <button class="save-btn" id="apply-update-btn" onclick="applyUpdate()" style="background:var(--green)">Apply Update</button>
+        <span id="update-status-msg" class="settings-msg"></span>
+      </div>
+      <div id="update-progress" style="display:none;font-size:12px;color:var(--yellow)"></div>
+    </div>
+  </div>
+
   <!-- ── Email ─────────────────────────────────────────────────── -->
   <div class="card">
     <div class="section-title">Email Notifications</div>
@@ -743,6 +771,8 @@ TEMPLATE = """<!DOCTYPE html>
       <label class="toggle-label"><input type="checkbox" id="trigger_main_pump_ran"> Main pump ran</label>
       <label class="toggle-label"><input type="checkbox" id="trigger_high_water"> High water alert</label>
       <label class="toggle-label"><input type="checkbox" id="trigger_device_offline"> Device offline</label>
+      <label class="toggle-label"><input type="checkbox" id="trigger_update_available"> New version available</label>
+      <label class="toggle-label"><input type="checkbox" id="trigger_update_installed"> New version installed</label>
     </div>
   </div>
 
@@ -751,35 +781,6 @@ TEMPLATE = """<!DOCTYPE html>
     <button class="save-btn" onclick="saveSettings()">Save Settings</button>
     <span class="settings-msg" id="save-msg"></span>
     <span id="unsaved-msg" style="display:none;font-size:12px;color:var(--yellow)">⚠ Unsaved changes — save before sending a test</span>
-  </div>
-
-</div>
-  <!-- ── Updates ──────────────────────────────────────────────────── -->
-  <div class="card" id="update-card">
-    <div class="section-title">Updates</div>
-    <div style="display:flex;flex-direction:column;gap:12px;margin-top:4px">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
-        <div style="font-size:13px">
-          Current version: <strong id="current-version" style="color:var(--blue)">—</strong>
-          &nbsp;&nbsp;
-          Latest: <strong id="latest-version" style="color:var(--muted)">checking…</strong>
-        </div>
-        <button class="test-btn" id="check-update-btn" onclick="checkForUpdates()">Check now</button>
-      </div>
-      <label class="toggle-label">
-        <input type="checkbox" id="auto_update" onchange="saveAutoUpdate()">
-        Automatically install updates overnight
-      </label>
-      <div id="release-notes-box" style="display:none">
-        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Release notes</div>
-        <pre id="release-notes" style="font-family:inherit;font-size:12px;color:var(--text);white-space:pre-wrap;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;max-height:200px;overflow-y:auto"></pre>
-      </div>
-      <div id="update-status-row" style="display:none;align-items:center;gap:12px">
-        <button class="save-btn" id="apply-update-btn" onclick="applyUpdate()" style="background:var(--green)">Apply Update</button>
-        <span id="update-status-msg" class="settings-msg"></span>
-      </div>
-      <div id="update-progress" style="display:none;font-size:12px;color:var(--yellow)"></div>
-    </div>
   </div>
 
 </div>
@@ -1272,7 +1273,7 @@ async function loadSettings() {
     });
     document.getElementById('email_enabled').checked = d.email_enabled === '1';
     document.getElementById('ntfy_enabled').checked  = d.ntfy_enabled  === '1';
-    ['backup_pump_ran','main_pump_ran','high_water','device_offline'].forEach(ev => {
+    ['backup_pump_ran','main_pump_ran','high_water','device_offline','update_available','update_installed'].forEach(ev => {
       const el = document.getElementById('trigger_' + ev);
       if (el) el.checked = d['trigger_' + ev] !== '0';
     });
@@ -1302,7 +1303,7 @@ async function saveSettings() {
   const nt = document.getElementById('ntfy_token').value;
   if (ep) data.email_smtp_pass = ep;
   if (nt) data.ntfy_token = nt;
-  ['backup_pump_ran','main_pump_ran','high_water','device_offline'].forEach(ev => {
+  ['backup_pump_ran','main_pump_ran','high_water','device_offline','update_available','update_installed'].forEach(ev => {
     data['trigger_' + ev] = document.getElementById('trigger_' + ev).checked ? '1' : '0';
   });
   try {

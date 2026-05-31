@@ -209,6 +209,14 @@ def do_update(tag: str = None) -> tuple[bool, str]:
 
         _set_state(phase="done", running=False)
         log.info(f"UPDATE  updated to {tag}")
+
+        # Notify that update was installed
+        try:
+            import notifications as notif
+            notif.notify(notif.EVENT_UPDATE_INSTALLED, f"PumpSleeper updated to {tag}")
+        except Exception:
+            pass
+
         return True, f"Updated to {tag}"
 
     except Exception as exc:
@@ -247,10 +255,22 @@ def trigger_update(tag: str = None):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
-    if not get_auto_update():
-        log.info("UPDATE  auto-update disabled — skipping")
-    elif not update_available():
+
+    latest = get_latest_release()
+    current = get_current_version()
+    avail = latest and latest["tag"] != current and current != "unknown"
+
+    if not avail:
         log.info("UPDATE  already up to date")
+    elif not get_auto_update():
+        # Update available but auto-update is off — notify user
+        log.info(f"UPDATE  new version available: {latest['tag']} (auto-update disabled)")
+        try:
+            import notifications as notif
+            notif.notify(notif.EVENT_UPDATE_AVAILABLE,
+                         f"PumpSleeper {latest['tag']} is available. Open the dashboard to update.")
+        except Exception:
+            pass
     else:
         log.info("UPDATE  applying available update...")
         ok, msg = do_update()

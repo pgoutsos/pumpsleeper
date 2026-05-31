@@ -4,6 +4,17 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v1.2] — 2026-05-31
+
+### New
+- Notification triggers for new version available and new version installed
+- Updates section moved to top of Settings tab for easier access
+
+### Improved
+- Auto-update disabled but update available now sends a notification prompting user to update manually
+
+---
+
 ## [v1.1] — 2026-05-31
 
 ### New
