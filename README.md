@@ -25,10 +25,22 @@ A local proxy and dashboard for **PumpSpy** sump pump monitors. PumpSleeper sits
 
 | Component | Requirement |
 |-----------|-------------|
-| Raspberry Pi | Pi Zero 2 W (~$15) is the minimum recommended; Pi 3B+ or Pi 4 also work |
-| WiFi | Built-in WiFi (all Pi Zero 2 W, Pi 3, Pi 4 models have this) |
 | Storage | 8GB+ microSD card |
 | OS | Raspberry Pi OS Bookworm (handled automatically by the pre-built image) |
+
+### Recommended hardware
+
+| Board | Price | Ethernet | Auto-update | Notes |
+|-------|-------|----------|-------------|-------|
+| **Pi 3B+** | ~$35 | Built-in | ✅ Yes | Best value — ethernet + WiFi, no extra hardware |
+| **Pi 4** | ~$45+ | Built-in | ✅ Yes | Best performance, same setup as 3B+ |
+| **Pi Zero 2 W** | ~$15 | None built-in | ⚠️ With adapter | Cheapest option — see note below |
+
+**Pi Zero 2 W note:** The Pi Zero 2 W has one WiFi radio, so once the hotspot is active it has no internet access and cannot auto-update. To get ethernet (and therefore auto-update), add:
+- A **micro USB OTG to USB-A adapter** (~$3) into the USB port
+- A **USB ethernet adapter** (~$10) into that
+
+Power still goes into the separate PWR IN port as normal. No image or software changes are needed — Pi OS detects USB ethernet adapters automatically.
 
 ---
 
