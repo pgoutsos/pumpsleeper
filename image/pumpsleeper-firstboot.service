@@ -1,0 +1,15 @@
+[Unit]
+Description=PumpSleeper First Boot Setup
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/boot/firmware/pumpsleeper.conf
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pumpsleeper-firstboot.sh
+RemainAfterExit=yes
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

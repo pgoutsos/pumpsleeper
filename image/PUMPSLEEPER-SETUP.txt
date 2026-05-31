@@ -1,0 +1,24 @@
+================================================
+ PumpSleeper Setup
+================================================
+
+Before booting:
+1. Open pumpsleeper.conf in a text editor
+2. Set HOME_WIFI_SSID and HOME_WIFI_PASS (your home network)
+3. Set your hotspot SSID and password for the PumpSpy device
+4. Optionally set SSH_PASS to change the default login password
+5. Save and eject the SD card
+
+Default SSH login:
+  Username : pumpsleeper
+  Password : pumpspy  (change via SSH_PASS in pumpsleeper.conf)
+
+On first boot, PumpSleeper installs automatically (3-5 minutes).
+Progress is logged to pumpsleeper-install.log on this drive.
+
+Once complete:
+  Dashboard : http://<pi-ip>:8080
+  SSH       : ssh pumpsleeper@<pi-ip>
+
+More info: https://github.com/pgoutsos/pumpsleeper
+================================================
