@@ -1403,7 +1403,7 @@ async function applyUpdate() {
     return;
   }
 
-  let _restartDetected = false;
+  let _updateStarted = true;
   let _pollFailCount = 0;
   if (_updatePoller) clearInterval(_updatePoller);
   _updatePoller = setInterval(async () => {
@@ -1416,11 +1416,9 @@ async function applyUpdate() {
         prog.textContent = '⬇ Downloading update files…';
       } else if (s.phase === 'restarting') {
         prog.textContent = '↺ Restarting services — dashboard will reload shortly…';
-        _restartDetected = true;
       } else if (s.phase === 'done') {
         clearInterval(_updatePoller); _updatePoller = null;
         prog.style.display = 'none';
-        _setMsg('update-status-msg', '✓ Updated to ' + s.version, true);
         btn.disabled = false;
         loadUpdateInfo();
       } else if (s.phase === 'error') {
@@ -1428,22 +1426,21 @@ async function applyUpdate() {
         prog.style.display = 'none';
         _setMsg('update-status-msg', '✗ ' + (s.error || 'Update failed'), false);
         btn.disabled = false;
-      } else if (s.phase === 'idle' && _restartDetected) {
-        // Dashboard restarted — update completed successfully
+      } else if (s.phase === 'idle' && _updateStarted) {
+        // Back to idle — dashboard restarted after update
         clearInterval(_updatePoller); _updatePoller = null;
         prog.style.display = 'none';
         btn.disabled = false;
-        loadUpdateInfo();   // will show "✓ Successfully updated" from last_update.json
+        loadUpdateInfo();   // shows "✓ Successfully updated" from last_update.json
       }
     } catch(e) {
       // Fetch failed — dashboard is restarting
       _pollFailCount++;
       if (_pollFailCount >= 2) {
         prog.textContent = '↺ Dashboard restarting…';
-        _restartDetected = true;
       }
     }
-  }, 2000);
+  }, 1000);
 }
 
 async function sendTest(channel) {
