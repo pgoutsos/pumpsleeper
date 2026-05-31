@@ -118,8 +118,8 @@ echo "      Done."
 
 # ── Python dependencies ───────────────────────────────────────────────────────
 echo "[4/8] Installing Python packages..."
-pip3 install --break-system-packages --quiet flask waitress requests
-[[ -n "$MQTT_HOST" ]] && pip3 install --break-system-packages --quiet paho-mqtt
+pip3 install --break-system-packages --quiet --root-user-action=ignore flask waitress requests
+[[ -n "$MQTT_HOST" ]] && pip3 install --break-system-packages --quiet --root-user-action=ignore paho-mqtt
 echo "      Done."
 
 # ── Service user ──────────────────────────────────────────────────────────────
@@ -175,8 +175,8 @@ iptables -t nat -A PREROUTING -i "$WIFI_IFACE" -p tcp --dport "$SERVER_PORT" \
 iptables -t nat -D POSTROUTING -o "$WIFI_IFACE" -j MASQUERADE 2>/dev/null || true
 iptables -t nat -A POSTROUTING -o "$WIFI_IFACE" -j MASQUERADE
 sysctl -w net.ipv4.ip_forward=1 > /dev/null
-grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf \
-    || echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+# Bookworm uses /etc/sysctl.d/ instead of /etc/sysctl.conf
+echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-pumpsleeper.conf
 netfilter-persistent save
 
 cat > /etc/sudoers.d/pumpsleeper-hotspot \
