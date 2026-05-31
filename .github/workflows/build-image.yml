@@ -1,0 +1,129 @@
+name: Build PumpSleeper Pi Image
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:   # allow manual trigger from GitHub Actions UI
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to upload release assets
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y xz-utils kpartx
+
+      - name: Download Raspberry Pi OS Lite (arm64)
+        run: |
+          echo "Fetching latest Pi OS Lite arm64 image URL..."
+          IMG_URL=$(curl -sL https://downloads.raspberrypi.com/raspios_lite_arm64/images/ \
+            | grep -oP 'href="\K[^"]+(?=/)' | tail -1)
+          FULL_URL="https://downloads.raspberrypi.com/raspios_lite_arm64/images/${IMG_URL}/"
+          IMG_FILE=$(curl -sL "$FULL_URL" | grep -oP 'href="\K[^"]+\.img\.xz(?=")' | head -1)
+          echo "Downloading: ${FULL_URL}${IMG_FILE}"
+          curl -L "${FULL_URL}${IMG_FILE}" -o base.img.xz
+          echo "IMG_FILE=$IMG_FILE" >> $GITHUB_ENV
+
+      - name: Decompress image
+        run: xz -d base.img.xz && mv base.img pumpsleeper.img
+
+      - name: Mount image partitions
+        run: |
+          sudo losetup -f --show -P pumpsleeper.img > /tmp/loopdev
+          LOOPDEV=$(cat /tmp/loopdev)
+          echo "LOOPDEV=$LOOPDEV" >> $GITHUB_ENV
+          sleep 2
+          sudo mkdir -p /mnt/boot /mnt/root
+          sudo mount "${LOOPDEV}p1" /mnt/boot
+          sudo mount "${LOOPDEV}p2" /mnt/root
+
+      - name: Inject firstboot service and config
+        run: |
+          # Copy firstboot script into root filesystem
+          sudo cp image/firstboot.sh /mnt/root/usr/local/bin/pumpsleeper-firstboot.sh
+          sudo chmod +x /mnt/root/usr/local/bin/pumpsleeper-firstboot.sh
+
+          # Create the systemd firstboot service
+          sudo tee /mnt/root/etc/systemd/system/pumpsleeper-firstboot.service > /dev/null <<'EOF'
+          [Unit]
+          Description=PumpSleeper First Boot Setup
+          After=network-online.target firstrun.service
+          Wants=network-online.target
+          ConditionPathExists=/boot/firmware/pumpsleeper.conf
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/pumpsleeper-firstboot.sh
+          RemainAfterExit=yes
+          StandardOutput=journal+console
+          StandardError=journal+console
+
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+
+          # Enable the firstboot service
+          sudo ln -sf /etc/systemd/system/pumpsleeper-firstboot.service \
+              /mnt/root/etc/systemd/system/multi-user.target.wants/pumpsleeper-firstboot.service
+
+          # Place the config template on the boot partition (FAT32 — user editable)
+          sudo cp image/pumpsleeper.conf /mnt/boot/pumpsleeper.conf
+
+          # Place a README on the boot partition so users know what to do
+          sudo tee /mnt/boot/PUMPSLEEPER-SETUP.txt > /dev/null <<'EOF'
+          ================================================
+           PumpSleeper Setup
+          ================================================
+
+          Before booting:
+          1. Open pumpsleeper.conf in a text editor
+          2. Set your hotspot SSID and password
+          3. Optionally set MQTT details for Home Assistant
+          4. Save and eject the SD card
+
+          On first boot, PumpSleeper will install automatically.
+          Progress is logged to pumpsleeper-install.log on this drive.
+          Installation takes 3-5 minutes depending on internet speed.
+
+          Once complete:
+          - Connect your PumpSpy device to your hotspot
+          - Open http://<pi-ip>:8080 for the dashboard
+
+          More info: https://github.com/pgoutsos/pumpsleeper
+          ================================================
+          EOF
+
+      - name: Unmount image
+        run: |
+          sudo umount /mnt/boot /mnt/root
+          sudo losetup -d ${{ env.LOOPDEV }}
+
+      - name: Compress final image
+        run: |
+          VERSION="${{ github.event.release.tag_name || 'dev' }}"
+          OUTPUT="pumpsleeper-${VERSION}.img.xz"
+          echo "OUTPUT=$OUTPUT" >> $GITHUB_ENV
+          xz -9 -T0 pumpsleeper.img
+          mv pumpsleeper.img.xz "$OUTPUT"
+          echo "Image size: $(du -sh $OUTPUT | cut -f1)"
+
+      - name: Upload to GitHub Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.OUTPUT }}
+
+      - name: Upload as workflow artifact (manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pumpsleeper-image
+          path: ${{ env.OUTPUT }}
+          retention-days: 7
