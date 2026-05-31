@@ -94,7 +94,7 @@ jobs:
           VERSION="${{ github.event.release.tag_name || 'dev' }}"
           OUTPUT="pumpsleeper-${VERSION}.img.xz"
           echo "OUTPUT=$OUTPUT" >> $GITHUB_ENV
-          xz -9 -T0 pumpsleeper.img
+          xz -6 -T2 pumpsleeper.img
           mv pumpsleeper.img.xz "$OUTPUT"
           echo "Image size: $(du -sh $OUTPUT | cut -f1)"
 
