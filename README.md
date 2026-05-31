@@ -12,6 +12,12 @@ A local proxy and dashboard for **PumpSpy** sump pump monitors. PumpSleeper sits
 - **Home Assistant integration** — 19 MQTT entities with auto-discovery; custom Lovelace card included
 - **Mode toggle** — switch Proxy ↔ Takeover from the dashboard or HA card
 
+## Screenshots
+
+![Dashboard](docs/screenshot-dashboard.png)
+
+![Settings](docs/screenshot-settings.png)
+
 ---
 
 ## Hardware requirements
