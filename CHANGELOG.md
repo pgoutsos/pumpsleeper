@@ -4,14 +4,18 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
-## [v1.2] — 2026-05-31
+## [v1.4] — 2026-05-31
 
 ### New
 - Notification triggers for new version available and new version installed
 - Updates section moved to top of Settings tab for easier access
+- Update progress now shown in the dashboard UI with live status during download and restart
+- Last update result persisted across service restarts so the UI always reflects what happened
 
 ### Improved
 - Auto-update disabled but update available now sends a notification prompting user to update manually
+- Settings page redesigned with two-column layout on desktop, single column on mobile
+- Notification trigger checkboxes use a flowing grid layout on wider screens
 
 ---
 
