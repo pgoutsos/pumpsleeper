@@ -754,6 +754,35 @@ TEMPLATE = """<!DOCTYPE html>
   </div>
 
 </div>
+  <!-- ── Updates ──────────────────────────────────────────────────── -->
+  <div class="card" id="update-card">
+    <div class="section-title">Updates</div>
+    <div style="display:flex;flex-direction:column;gap:12px;margin-top:4px">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+        <div style="font-size:13px">
+          Current version: <strong id="current-version" style="color:var(--blue)">—</strong>
+          &nbsp;&nbsp;
+          Latest: <strong id="latest-version" style="color:var(--muted)">checking…</strong>
+        </div>
+        <button class="test-btn" id="check-update-btn" onclick="checkForUpdates()">Check now</button>
+      </div>
+      <label class="toggle-label">
+        <input type="checkbox" id="auto_update" onchange="saveAutoUpdate()">
+        Automatically install updates overnight
+      </label>
+      <div id="release-notes-box" style="display:none">
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Release notes</div>
+        <pre id="release-notes" style="font-family:inherit;font-size:12px;color:var(--text);white-space:pre-wrap;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;max-height:200px;overflow-y:auto"></pre>
+      </div>
+      <div id="update-status-row" style="display:none;align-items:center;gap:12px">
+        <button class="save-btn" id="apply-update-btn" onclick="applyUpdate()" style="background:var(--green)">Apply Update</button>
+        <span id="update-status-msg" class="settings-msg"></span>
+      </div>
+      <div id="update-progress" style="display:none;font-size:12px;color:var(--yellow)"></div>
+    </div>
+  </div>
+
+</div>
 </div><!-- end tab-settings -->
 
 <script>
@@ -1201,7 +1230,7 @@ function showTab(name) {
   document.querySelectorAll('.tab-btn').forEach(b => {
     if (b.textContent.trim().toLowerCase() === name) b.classList.add('active');
   });
-  if (name === 'settings') loadSettings();
+  if (name === 'settings') { loadSettings(); loadUpdateInfo(); }
 }
 
 // ── Notification settings ─────────────────────────────────────────────────
@@ -1284,6 +1313,106 @@ async function saveSettings() {
     if (d.ok) _markClean();
     _setMsg('save-msg', d.ok ? '✓ Saved' : ('Error: ' + d.error), d.ok);
   } catch(e) { _setMsg('save-msg', 'Save failed', false); }
+}
+
+// ── Updates ───────────────────────────────────────────────────────────────────
+let _updatePoller = null;
+
+async function loadUpdateInfo() {
+  try {
+    const r = await fetch('/api/update');
+    const d = await r.json();
+    document.getElementById('current-version').textContent = d.current_version || 'unknown';
+    document.getElementById('auto_update').checked = d.auto_update !== false;
+    if (d.latest) _showLatest(d.latest, d.update_available);
+    else document.getElementById('latest-version').textContent = '—';
+  } catch(e) {}
+}
+
+function _showLatest(latest, available) {
+  document.getElementById('latest-version').textContent = latest.tag || '—';
+  document.getElementById('latest-version').style.color = available ? 'var(--green)' : 'var(--muted)';
+  if (latest.notes) {
+    document.getElementById('release-notes').textContent = latest.notes;
+    document.getElementById('release-notes-box').style.display = '';
+  }
+  const row = document.getElementById('update-status-row');
+  if (available) {
+    row.style.display = 'flex';
+    document.getElementById('apply-update-btn').textContent = 'Apply Update ' + latest.tag;
+    _setMsg('update-status-msg', '', true);
+  } else {
+    row.style.display = 'none';
+  }
+}
+
+async function checkForUpdates() {
+  const btn = document.getElementById('check-update-btn');
+  btn.disabled = true;
+  document.getElementById('latest-version').textContent = 'checking…';
+  document.getElementById('latest-version').style.color = 'var(--muted)';
+  try {
+    const r = await fetch('/api/update/check');
+    const d = await r.json();
+    if (d.latest) _showLatest(d.latest, d.update_available);
+    else document.getElementById('latest-version').textContent = 'unavailable';
+  } catch(e) {
+    document.getElementById('latest-version').textContent = 'error';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function saveAutoUpdate() {
+  const enabled = document.getElementById('auto_update').checked;
+  try {
+    await fetch('/api/update/auto', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({enabled})
+    });
+  } catch(e) {}
+}
+
+async function applyUpdate() {
+  if (!confirm('Apply the update now? Services will restart briefly.')) return;
+  const btn = document.getElementById('apply-update-btn');
+  btn.disabled = true;
+  const prog = document.getElementById('update-progress');
+  prog.style.display = '';
+  prog.textContent = 'Starting update…';
+
+  try {
+    await fetch('/api/update/apply', { method: 'POST' });
+  } catch(e) {
+    _setMsg('update-status-msg', '✗ Failed to start update', false);
+    btn.disabled = false;
+    return;
+  }
+
+  if (_updatePoller) clearInterval(_updatePoller);
+  _updatePoller = setInterval(async () => {
+    try {
+      const r = await fetch('/api/update/status');
+      const s = await r.json();
+      if (s.phase === 'downloading') {
+        prog.textContent = '⬇ Downloading update…';
+      } else if (s.phase === 'restarting') {
+        prog.textContent = '↺ Restarting services…';
+      } else if (s.phase === 'done') {
+        clearInterval(_updatePoller); _updatePoller = null;
+        prog.style.display = 'none';
+        _setMsg('update-status-msg', '✓ Updated to ' + s.version, true);
+        btn.disabled = false;
+        loadUpdateInfo();
+      } else if (s.phase === 'error') {
+        clearInterval(_updatePoller); _updatePoller = null;
+        prog.style.display = 'none';
+        _setMsg('update-status-msg', '✗ ' + (s.error || 'Update failed'), false);
+        btn.disabled = false;
+      }
+    } catch(e) { /* dashboard restarting — expected */ }
+  }, 2000);
 }
 
 async function sendTest(channel) {
@@ -1452,6 +1581,45 @@ def api_mode_set():
         return jsonify(r.json()), r.status_code
     except Exception:
         return jsonify({"error": "server unreachable"}), 502
+
+@app.route("/api/update", methods=["GET"])
+def api_update_info():
+    from updater import get_current_version, get_latest_release, get_auto_update, update_available
+    current  = get_current_version()
+    latest   = get_latest_release()
+    avail    = (latest is not None) and (latest["tag"] != current) and (current != "unknown")
+    return jsonify({
+        "current_version":  current,
+        "auto_update":      get_auto_update(),
+        "latest":           latest,
+        "update_available": avail,
+    })
+
+@app.route("/api/update/check", methods=["GET"])
+def api_update_check():
+    from updater import get_current_version, get_latest_release
+    current = get_current_version()
+    latest  = get_latest_release()
+    avail   = (latest is not None) and (latest["tag"] != current) and (current != "unknown")
+    return jsonify({"latest": latest, "update_available": avail})
+
+@app.route("/api/update/auto", methods=["POST"])
+def api_update_auto():
+    from updater import set_auto_update
+    data = request.get_json(force=True, silent=True) or {}
+    set_auto_update(bool(data.get("enabled", True)))
+    return jsonify({"ok": True})
+
+@app.route("/api/update/apply", methods=["POST"])
+def api_update_apply():
+    from updater import trigger_update
+    ok, msg = trigger_update()
+    return jsonify({"ok": ok, "message": msg})
+
+@app.route("/api/update/status", methods=["GET"])
+def api_update_status():
+    from updater import get_update_state
+    return jsonify(get_update_state())
 
 @app.route("/api/settings/notifications", methods=["GET"])
 def api_settings_get():

@@ -158,7 +158,7 @@ grep -q "net.ipv4.ip_forward=1" /etc/sysctl.conf \
 netfilter-persistent save
 
 cat > /etc/sudoers.d/pumpsleeper-hotspot \
-    <<< "$RUN_USER ALL=(ALL) NOPASSWD: /usr/bin/nmcli con down PumpSleeper-Hotspot, /usr/bin/nmcli con up PumpSleeper-Hotspot"
+    <<< "$RUN_USER ALL=(ALL) NOPASSWD: /usr/bin/nmcli con down PumpSleeper-Hotspot, /usr/bin/nmcli con up PumpSleeper-Hotspot, /usr/bin/systemctl restart pumpsleeper, /usr/bin/systemctl restart pumpsleeper-dashboard"
 chmod 440 /etc/sudoers.d/pumpsleeper-hotspot
 
 # ── systemd services ──────────────────────────────────────────────────────────
@@ -203,9 +203,21 @@ StandardError=append:$INSTALL_DIR/data/dashboard.log
 WantedBy=multi-user.target
 EOF
 
+# ── Auto-update timer ─────────────────────────────────────────────────────────
+cp /tmp/pumpsleeper-update.service /etc/systemd/system/pumpsleeper-update.service 2>/dev/null || \
+curl -fsSL "https://raw.githubusercontent.com/pgoutsos/pumpsleeper/main/image/pumpsleeper-update.service" \
+    -o /etc/systemd/system/pumpsleeper-update.service
+curl -fsSL "https://raw.githubusercontent.com/pgoutsos/pumpsleeper/main/image/pumpsleeper-update.timer" \
+    -o /etc/systemd/system/pumpsleeper-update.timer
+
+# Write the installed version
+TAG=$(curl -fsSL https://api.github.com/repos/pgoutsos/pumpsleeper/releases/latest \
+    | python3 -c "import sys,json; print(json.load(sys.stdin).get('tag_name','unknown'))" 2>/dev/null || echo "unknown")
+echo "$TAG" > "$INSTALL_DIR/VERSION"
+
 systemctl daemon-reload
-systemctl enable pumpsleeper pumpsleeper-dashboard
-systemctl start pumpsleeper pumpsleeper-dashboard
+systemctl enable pumpsleeper pumpsleeper-dashboard pumpsleeper-update.timer
+systemctl start pumpsleeper pumpsleeper-dashboard pumpsleeper-update.timer
 echo "      Done."
 
 # ── Disable firstboot service ─────────────────────────────────────────────────

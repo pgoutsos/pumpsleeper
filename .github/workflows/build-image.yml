@@ -63,6 +63,10 @@ jobs:
           sudo ln -sf /etc/systemd/system/pumpsleeper-firstboot.service \
               /mnt/root/etc/systemd/system/multi-user.target.wants/pumpsleeper-firstboot.service
 
+          # Copy update timer service files (firstboot.sh picks these up from /tmp)
+          sudo cp image/pumpsleeper-update.service /tmp/pumpsleeper-update.service
+          sudo cp image/pumpsleeper-update.timer   /tmp/pumpsleeper-update.timer
+
           # Place config template and setup guide on the boot partition (FAT32 — user editable)
           sudo cp image/pumpsleeper.conf /mnt/boot/pumpsleeper.conf
           sudo cp image/PUMPSLEEPER-SETUP.txt /mnt/boot/PUMPSLEEPER-SETUP.txt

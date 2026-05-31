@@ -1,0 +1,13 @@
+[Unit]
+Description=PumpSleeper Auto-Update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pumpsleeper
+WorkingDirectory=/opt/pumpsleeper
+EnvironmentFile=/opt/pumpsleeper/pumpsleeper.env
+ExecStart=/usr/bin/python3 /opt/pumpsleeper/updater.py
+StandardOutput=append:/opt/pumpsleeper/data/update.log
+StandardError=append:/opt/pumpsleeper/data/update.log
