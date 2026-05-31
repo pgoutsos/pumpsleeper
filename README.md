@@ -7,9 +7,10 @@ A local proxy and dashboard for **PumpSpy** sump pump monitors. PumpSleeper sits
 - **Transparent proxy** — device keeps talking to pumpspy.com normally; you get a local copy of all data
 - **Takeover mode** — answer the device locally when the cloud is unreachable
 - **Local dashboard** — pump run history, stats, signal strength, battery voltage
-- **Home Assistant integration** — 17 MQTT entities with auto-discovery; custom Lovelace card included
+- **Device status** — real-time WiFi hotspot presence check, device IP display, hotspot cycle button
+- **Notifications** — email (SMTP) and push notifications (ntfy) for backup pump runs, main pump runs, high water alerts, and device offline; configured directly from the dashboard Settings tab — no Home Assistant required
+- **Home Assistant integration** — 19 MQTT entities with auto-discovery; custom Lovelace card included
 - **Mode toggle** — switch Proxy ↔ Takeover from the dashboard or HA card
-- **Notifications** — HA automations for backup pump runs, device offline, and long main pump runs
 
 ---
 
@@ -87,6 +88,38 @@ docker compose -f docker-compose.app.yml up -d
 ```
 
 Dashboard is available at `http://YOUR_SERVER_IP:8080`
+
+---
+
+## Notifications (no Home Assistant required)
+
+PumpSleeper can send notifications directly — no Home Assistant or third-party service needed beyond what you configure.
+
+### Supported channels
+
+| Channel | Cost | Setup |
+|---------|------|-------|
+| **Email (SMTP)** | Free | Works with Gmail, Outlook, Office 365, or any SMTP provider |
+| **Ntfy** | Free | Install the [ntfy app](https://ntfy.sh) (iOS/Android), subscribe to your topic |
+
+### Setup
+
+Open the dashboard, click the **Settings** tab, fill in your credentials, and hit **Save**. Use the **Send test** button to verify before relying on it.
+
+### Notification triggers
+
+All four triggers can be toggled individually in the Settings tab:
+
+| Trigger | Description |
+|---------|-------------|
+| **Backup pump ran** | Fires when the backup pump completes a run — includes duration, gallons, and battery voltage |
+| **Main pump ran** | Fires when the main pump completes a run — includes duration, gallons, and current |
+| **High water alert** | Fires when the high water sensor is triggered |
+| **Device offline** | Fires when the device drops off the hotspot (transition only — won't repeat) |
+
+### Gmail setup tip
+
+Gmail requires an [App Password](https://myaccount.google.com/apppasswords) (not your regular password) when 2FA is enabled. Use `smtp.gmail.com`, port `587`.
 
 ---
 
@@ -176,6 +209,7 @@ entities:
 | `PUMPSLEEPER_MQTT_PASSWORD` | *(none)* | MQTT password |
 | `PUMPSLEEPER_MQTT_PREFIX` | `pumpsleeper` | MQTT topic prefix |
 | `PUMPSLEEPER_DEVICE_ID` | `pumpsleeper_01` | Unique device ID for HA |
+| `PUMPSLEEPER_HOTSPOT_CON` | `Hotspot` | NetworkManager connection name for the hotspot (set to `PumpSleeper-Hotspot` by the installer) |
 
 ---
 
@@ -193,6 +227,17 @@ entities:
 - Verify the broker is reachable: `mosquitto_pub -h YOUR_BROKER_IP -t test -m hello`
 - Check server log for `MQTT connected` or error messages
 
+**Test notification button says "Save your settings first"**
+- Hit **Save Settings** before using the test buttons — settings must be persisted before a test can be sent
+
+**Ntfy test succeeds but notification doesn't arrive on phone**
+- Make sure you've subscribed to your topic in the ntfy app (tap **+** and enter your topic name)
+- Topic names are case-sensitive
+
+**Email test fails with authentication error**
+- For Gmail, use an [App Password](https://myaccount.google.com/apppasswords) rather than your account password
+- For Office 365, use `smtp.office365.com` port `587` with your full email address as the username
+
 **Switching to Takeover mode but device still shows offline in HA**
 - The device needs to re-authenticate against PumpSleeper after mode switches
 - The card shows a "Pending" countdown (up to 3 minutes) while waiting for the device to check in
@@ -205,10 +250,11 @@ entities:
 ```
 pumpsleeper/
 ├── app/
-│   ├── server.py        # Proxy server (port 8081)
-│   ├── dashboard.py     # Web dashboard (port 8080)
-│   ├── db.py            # SQLite helpers
-│   ├── mqtt.py          # HA MQTT integration
+│   ├── server.py           # Proxy server (port 8081)
+│   ├── dashboard.py        # Web dashboard (port 8080)
+│   ├── db.py               # SQLite helpers
+│   ├── mqtt.py             # HA MQTT integration
+│   ├── notifications.py    # Email + ntfy notification dispatcher
 │   └── requirements.txt
 ├── homelab/
 │   ├── docker-compose.yml              # HA + Mosquitto
