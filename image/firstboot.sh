@@ -151,6 +151,9 @@ PUMPSLEEPER_HOTSPOT_CON=PumpSleeper-Hotspot
 EOF
 chmod 600 "$INSTALL_DIR/pumpsleeper.env"
 chown -R "$RUN_USER:$RUN_USER" "$INSTALL_DIR"
+chmod 755 "$INSTALL_DIR"
+chmod 644 "$INSTALL_DIR"/*.py 2>/dev/null || true
+chmod 644 "$INSTALL_DIR/VERSION" 2>/dev/null || true
 echo "      Done."
 
 # ── WiFi hotspot ──────────────────────────────────────────────────────────────
