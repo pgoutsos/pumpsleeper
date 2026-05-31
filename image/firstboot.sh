@@ -7,7 +7,7 @@
 #  by reading that file from any Mac or PC after install.
 # =============================================================================
 
-set -euo pipefail
+set -uo pipefail
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BOOT_DIR="/boot/firmware"
@@ -61,7 +61,9 @@ echo ""
 
 # ── Change default SSH password ───────────────────────────────────────────────
 echo "[1/8] Setting login password..."
-echo "pumpsleeper:${SSH_PASS}" | chpasswd
+PASS_HASH=$(echo "$SSH_PASS" | openssl passwd -6 -stdin)
+usermod -p "$PASS_HASH" pumpsleeper 2>/dev/null \
+    || echo "      WARNING: Could not set password now — will retry after boot."
 echo "      Done."
 
 # ── Connect to home WiFi ──────────────────────────────────────────────────────
