@@ -43,7 +43,6 @@ homelab/mosquitto/log/
 
 # ── Deploy / provision artifacts ──────────────────────────────────────────────
 deploy.sh
-image/
 scripts/
 
 # ── Stale root-level copies (real files live in app/) ────────────────────────
