@@ -11,6 +11,7 @@ A local proxy and dashboard for **PumpSpy** sump pump monitors. PumpSleeper sits
 - **Notifications** — email (SMTP) and push notifications (ntfy) for backup pump runs, main pump runs, high water alerts, and device offline; configured directly from the dashboard Settings tab — no Home Assistant required
 - **Home Assistant integration** — 19 MQTT entities with auto-discovery; custom Lovelace card included
 - **Mode toggle** — switch Proxy ↔ Takeover from the dashboard or HA card
+- **Pre-built Pi image** — flash and go; edit one config file on the SD card and PumpSleeper installs itself on first boot
 
 ## Screenshots
 
@@ -24,16 +25,65 @@ A local proxy and dashboard for **PumpSpy** sump pump monitors. PumpSleeper sits
 
 | Component | Requirement |
 |-----------|-------------|
-| Raspberry Pi | Pi 3B+ or newer recommended (Pi 4 ideal) |
-| WiFi | Built-in or USB WiFi adapter |
-| Storage | 8GB+ SD card |
-| OS | Raspberry Pi OS (Bookworm or Bullseye) |
+| Raspberry Pi | Pi Zero 2 W (~$15) is the minimum recommended; Pi 3B+ or Pi 4 also work |
+| WiFi | Built-in WiFi (all Pi Zero 2 W, Pi 3, Pi 4 models have this) |
+| Storage | 8GB+ microSD card |
+| OS | Raspberry Pi OS Bookworm (handled automatically by the pre-built image) |
 
 ---
 
-## Installation — Option A: Pi installer (recommended)
+## Installation — Option A: Pre-built image (easiest)
 
-This is the easiest path. One script sets up everything: hotspot, iptables interception, Python services, and systemd.
+Download the latest image from [GitHub Releases](https://github.com/pgoutsos/pumpsleeper/releases), flash it with [Raspberry Pi Imager](https://raspberrypi.com/software), and PumpSleeper configures itself on first boot. No terminal required.
+
+### 1. Flash the image
+
+1. Download `pumpsleeper-vX.X.img.xz` from [Releases](https://github.com/pgoutsos/pumpsleeper/releases)
+2. Open **Raspberry Pi Imager** → **Choose OS** → **Use custom** → select the downloaded file
+3. Choose your SD card and click **Write** (skip the customisation step if it appears — configuration is handled via the config file below)
+
+### 2. Configure before first boot
+
+Open the SD card on your computer — you'll see two files on the boot partition:
+
+- `PUMPSLEEPER-SETUP.txt` — quick start guide
+- `pumpsleeper.conf` — edit this before booting
+
+Open `pumpsleeper.conf` and fill in at minimum:
+
+```ini
+HOME_WIFI_SSID=YourHomeWiFi        # Pi needs this to download PumpSleeper on first boot
+HOME_WIFI_PASS=YourWiFiPassword
+
+SSH_PASS=yourpassword              # Change the default login password (recommended)
+
+HOTSPOT_SSID=PumpSpyLab           # The WiFi network your PumpSpy device connects to
+HOTSPOT_PASS=pumpspy123
+```
+
+Save the file, eject the SD card, insert into the Pi and power it on.
+
+### 3. Wait for installation
+
+Installation takes 3–5 minutes. Progress is logged to `pumpsleeper-install.log` on the boot partition — you can read this file from any computer by re-inserting the SD card, or via SSH.
+
+Once complete the log will show:
+```
+ Dashboard : http://<pi-ip>:8080
+ SSH       : ssh pumpsleeper@<pi-ip>
+```
+
+### 4. Connect your PumpSpy device
+
+Connect the PumpSpy device to the hotspot SSID you configured. It will appear in the dashboard within a few minutes.
+
+**Default SSH credentials:** username `pumpsleeper`, password `pumpspy` (or whatever you set as `SSH_PASS`)
+
+---
+
+## Installation — Option B: Pi installer script
+
+Use this if you prefer a guided interactive setup over the pre-built image. One script sets up everything: hotspot, iptables interception, Python services, and systemd.
 
 ```bash
 # Download and run the installer
@@ -57,7 +107,7 @@ After installation, connect your PumpSpy device to the hotspot you configured. I
 
 ---
 
-## Installation — Option B: Docker (any Linux machine)
+## Installation — Option C: Docker (any Linux machine)
 
 Use this if you want to run PumpSleeper on a NAS, Mac Mini, or any Linux box. You still need a Raspberry Pi (or similar) to create the WiFi hotspot and intercept the device traffic — the Docker container just runs the server and dashboard.
 
@@ -256,20 +306,30 @@ entities:
 ```
 pumpsleeper/
 ├── app/
-│   ├── server.py           # Proxy server (port 8081)
-│   ├── dashboard.py        # Web dashboard (port 8080)
-│   ├── db.py               # SQLite helpers
-│   ├── mqtt.py             # HA MQTT integration
-│   ├── notifications.py    # Email + ntfy notification dispatcher
+│   ├── server.py               # Proxy server (port 8081)
+│   ├── dashboard.py            # Web dashboard (port 8080)
+│   ├── db.py                   # SQLite helpers
+│   ├── mqtt.py                 # HA MQTT integration
+│   ├── notifications.py        # Email + ntfy notification dispatcher
 │   └── requirements.txt
+├── image/
+│   ├── pumpsleeper.conf                # Config template (copied to SD card boot partition)
+│   ├── firstboot.sh                    # Non-interactive installer (runs on first boot)
+│   ├── pumpsleeper-firstboot.service   # systemd unit for firstboot
+│   └── PUMPSLEEPER-SETUP.txt           # Quick start guide placed on boot partition
 ├── homelab/
 │   ├── docker-compose.yml              # HA + Mosquitto
 │   ├── mosquitto/config/mosquitto.conf
 │   └── homeassistant/www/
 │       └── pumpsleeper-card.js         # Custom Lovelace card
-├── install.sh           # Pi installer
-├── Dockerfile           # Docker image
-├── docker-compose.app.yml  # Docker Compose (server + dashboard)
+├── .github/workflows/
+│   └── build-image.yml         # Builds Pi image and publishes to GitHub Releases
+├── docs/
+│   ├── screenshot-dashboard.png
+│   └── screenshot-settings.png
+├── install.sh                  # Interactive Pi installer script
+├── Dockerfile                  # Docker image
+├── docker-compose.app.yml      # Docker Compose (server + dashboard)
 └── docker-entrypoint.sh
 ```
 
