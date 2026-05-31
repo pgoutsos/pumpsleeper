@@ -72,16 +72,32 @@ if [[ -z "$HOME_WIFI_SSID" ]]; then
     echo "      WARNING: HOME_WIFI_SSID not set in pumpsleeper.conf."
     echo "      Cannot connect to internet. Install will fail when downloading files."
 else
-    nmcli dev wifi connect "$HOME_WIFI_SSID" password "$HOME_WIFI_PASS" ifname "$WIFI_IFACE" 2>&1 || true
+    # Ensure WiFi radio is on and managed, then force a fresh scan
+    nmcli radio wifi on 2>/dev/null || true
+    nmcli dev set "$WIFI_IFACE" managed yes 2>/dev/null || true
+    echo "      Scanning for networks..."
+    nmcli dev wifi rescan ifname "$WIFI_IFACE" 2>/dev/null || true
+    sleep 10   # give the scan time to complete
+
+    # Add a connection profile rather than using 'connect' — this works
+    # even if the SSID isn't visible in the scan yet
+    nmcli con delete "HomeWiFi" 2>/dev/null || true
+    nmcli con add type wifi ifname "$WIFI_IFACE" con-name "HomeWiFi" \
+        ssid "$HOME_WIFI_SSID" \
+        wifi-sec.key-mgmt wpa-psk \
+        wifi-sec.psk "$HOME_WIFI_PASS" \
+        connection.autoconnect no 2>&1
+    nmcli con up "HomeWiFi" ifname "$WIFI_IFACE" 2>&1 || true
+
     echo "      Waiting for network..."
     for i in $(seq 1 30); do
-        sleep 2
+        sleep 3
         if curl -fsSL --max-time 5 https://github.com > /dev/null 2>&1; then
             echo "      Network ready."
             break
         fi
         if [[ $i -eq 30 ]]; then
-            echo "      ERROR: Could not reach internet after 60 seconds."
+            echo "      ERROR: Could not reach internet after 90 seconds."
             echo "      Check HOME_WIFI_SSID and HOME_WIFI_PASS in pumpsleeper.conf."
             exit 1
         fi
