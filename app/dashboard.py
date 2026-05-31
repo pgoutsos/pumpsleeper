@@ -1327,6 +1327,14 @@ async function loadUpdateInfo() {
     document.getElementById('auto_update').checked = d.auto_update !== false;
     if (d.latest) _showLatest(d.latest, d.update_available);
     else document.getElementById('latest-version').textContent = '—';
+    // Show last update result if recently completed
+    if (d.last_update && d.last_update.ok) {
+      const ago = fmtAgo(d.last_update.ts);
+      const prog = document.getElementById('update-progress');
+      prog.style.display = '';
+      prog.style.color = 'var(--green)';
+      prog.textContent = '✓ Successfully updated to ' + d.last_update.tag + ' · ' + ago;
+    }
   } catch(e) {}
 }
 
@@ -1391,15 +1399,20 @@ async function applyUpdate() {
     return;
   }
 
+  let _restartDetected = false;
+  let _pollFailCount = 0;
   if (_updatePoller) clearInterval(_updatePoller);
   _updatePoller = setInterval(async () => {
     try {
       const r = await fetch('/api/update/status');
       const s = await r.json();
+      _pollFailCount = 0;
+
       if (s.phase === 'downloading') {
-        prog.textContent = '⬇ Downloading update…';
+        prog.textContent = '⬇ Downloading update files…';
       } else if (s.phase === 'restarting') {
-        prog.textContent = '↺ Restarting services…';
+        prog.textContent = '↺ Restarting services — dashboard will reload shortly…';
+        _restartDetected = true;
       } else if (s.phase === 'done') {
         clearInterval(_updatePoller); _updatePoller = null;
         prog.style.display = 'none';
@@ -1411,8 +1424,21 @@ async function applyUpdate() {
         prog.style.display = 'none';
         _setMsg('update-status-msg', '✗ ' + (s.error || 'Update failed'), false);
         btn.disabled = false;
+      } else if (s.phase === 'idle' && _restartDetected) {
+        // Dashboard restarted — update completed successfully
+        clearInterval(_updatePoller); _updatePoller = null;
+        prog.style.display = 'none';
+        btn.disabled = false;
+        loadUpdateInfo();   // will show "✓ Successfully updated" from last_update.json
       }
-    } catch(e) { /* dashboard restarting — expected */ }
+    } catch(e) {
+      // Fetch failed — dashboard is restarting
+      _pollFailCount++;
+      if (_pollFailCount >= 2) {
+        prog.textContent = '↺ Dashboard restarting…';
+        _restartDetected = true;
+      }
+    }
   }, 2000);
 }
 
@@ -1585,15 +1611,27 @@ def api_mode_set():
 
 @app.route("/api/update", methods=["GET"])
 def api_update_info():
-    from updater import get_current_version, get_latest_release, get_auto_update, update_available
+    import json as _json
+    from updater import get_current_version, get_latest_release, get_auto_update
     current  = get_current_version()
     latest   = get_latest_release()
     avail    = (latest is not None) and (latest["tag"] != current) and (current != "unknown")
+    # Read last update result from disk (persists across restarts)
+    last_update = None
+    try:
+        result_file = os.path.join(
+            os.environ.get("PUMPSPY_INSTALL_DIR", "/opt/pumpsleeper"), "data", "last_update.json"
+        )
+        with open(result_file) as f:
+            last_update = _json.load(f)
+    except Exception:
+        pass
     return jsonify({
         "current_version":  current,
         "auto_update":      get_auto_update(),
         "latest":           latest,
         "update_available": avail,
+        "last_update":      last_update,
     })
 
 @app.route("/api/update/check", methods=["GET"])

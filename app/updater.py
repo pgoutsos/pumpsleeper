@@ -202,13 +202,29 @@ def do_update(tag: str = None) -> tuple[bool, str]:
         # Update VERSION file
         set_current_version(tag)
 
-        # Restart services
+        # Persist result to disk so it survives the dashboard restart
+        import json as _json
+        result_file = os.path.join(INSTALL_DIR, "data", "last_update.json")
+        try:
+            with open(result_file, "w") as f:
+                _json.dump({
+                    "tag": tag,
+                    "ts":  datetime.now(timezone.utc).isoformat(),
+                    "ok":  True,
+                }, f)
+        except Exception:
+            pass
+
+        # Restart server first, then dashboard last (killing this process)
         _set_state(phase="restarting")
         log.info("UPDATE  restarting services...")
-        _restart_services()
-
-        _set_state(phase="done", running=False)
-        log.info(f"UPDATE  updated to {tag}")
+        subprocess.run(["sudo", "systemctl", "restart", "pumpsleeper"],
+                       capture_output=True, timeout=30)
+        log.info("UPDATE  restarted pumpsleeper")
+        log.info(f"UPDATE  updated to {tag} — restarting dashboard now")
+        # This kills the current process — must be last
+        subprocess.run(["sudo", "systemctl", "restart", "pumpsleeper-dashboard"],
+                       capture_output=True, timeout=30)
 
         # Notify that update was installed
         try:
