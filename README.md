@@ -55,7 +55,7 @@ Open `pumpsleeper.conf` and fill in at minimum:
 HOME_WIFI_SSID=YourHomeWiFi        # Pi needs this to download PumpSleeper on first boot
 HOME_WIFI_PASS=YourWiFiPassword
 
-SSH_PASS=yourpassword              # Change the default login password (recommended)
+SSH_PASS=yourpassword              # Default is "pumpspy" — change this (recommended)
 
 HOTSPOT_SSID=PumpSpyLab           # The WiFi network your PumpSpy device connects to
 HOTSPOT_PASS=pumpspy123
