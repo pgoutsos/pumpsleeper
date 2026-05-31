@@ -85,11 +85,23 @@ jobs:
           mv pumpsleeper.img.xz "$OUTPUT"
           echo "Image size: $(du -sh $OUTPUT | cut -f1)"
 
+      - name: Extract release notes from CHANGELOG.md
+        if: github.event_name == 'release'
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          # Extract the section for this version from CHANGELOG.md
+          NOTES=$(awk "/^## \[${VERSION}\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md)
+          # Write to a file so the upload step can read it
+          echo "$NOTES" > release-notes.txt
+          echo "Release notes extracted for $VERSION:"
+          cat release-notes.txt
+
       - name: Upload to GitHub Release
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.OUTPUT }}
+          body_path: release-notes.txt
 
       - name: Upload as workflow artifact (manual runs)
         if: github.event_name == 'workflow_dispatch'
