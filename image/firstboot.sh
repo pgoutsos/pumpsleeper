@@ -89,17 +89,16 @@ else
         connection.autoconnect no 2>&1
     nmcli con up "HomeWiFi" ifname "$WIFI_IFACE" 2>&1 || true
 
-    echo "      Waiting for network..."
+    echo "      Waiting for network (needed for apt-get)..."
     for i in $(seq 1 30); do
         sleep 3
-        if curl -fsSL --max-time 5 https://github.com > /dev/null 2>&1; then
+        if curl -fsSL --max-time 5 http://detectportal.firefox.com > /dev/null 2>&1; then
             echo "      Network ready."
             break
         fi
         if [[ $i -eq 30 ]]; then
-            echo "      ERROR: Could not reach internet after 90 seconds."
-            echo "      Check HOME_WIFI_SSID and HOME_WIFI_PASS in pumpsleeper.conf."
-            exit 1
+            echo "      WARNING: Could not confirm internet after 90 seconds — continuing anyway."
+            echo "      Package installation may fail if network is unavailable."
         fi
     done
 fi
@@ -131,13 +130,15 @@ fi
 echo "      Done."
 
 # ── Install app files ─────────────────────────────────────────────────────────
-echo "[6/8] Downloading app files from GitHub..."
+echo "[6/8] Installing app files..."
 mkdir -p "$INSTALL_DIR/data"
-BASE_URL="https://raw.githubusercontent.com/pgoutsos/pumpsleeper/main/app"
 for f in server.py dashboard.py db.py mqtt.py notifications.py updater.py; do
-    echo "      Downloading $f..."
-    curl -fsSL --retry 3 "$BASE_URL/$f" -o "$INSTALL_DIR/$f" \
-        || echo "      WARNING: failed to download $f"
+    if [[ -f "/usr/local/lib/pumpsleeper/$f" ]]; then
+        cp "/usr/local/lib/pumpsleeper/$f" "$INSTALL_DIR/$f"
+        echo "      Installed $f"
+    else
+        echo "      WARNING: $f not found in image"
+    fi
 done
 
 cat > "$INSTALL_DIR/pumpsleeper.env" <<EOF
@@ -230,8 +231,9 @@ if [[ -f /usr/local/lib/pumpsleeper-update.service ]]; then
     cp /usr/local/lib/pumpsleeper-update.timer   /etc/systemd/system/pumpsleeper-update.timer
 fi
 
-# Write the installed version
-echo "main" > "$INSTALL_DIR/VERSION"
+# Write the installed version (baked in by GitHub Action, or fallback to 'dev')
+VERSION=$(cat /usr/local/lib/pumpsleeper-version 2>/dev/null || echo "dev")
+echo "$VERSION" > "$INSTALL_DIR/VERSION"
 
 systemctl daemon-reload
 systemctl enable pumpsleeper pumpsleeper-dashboard

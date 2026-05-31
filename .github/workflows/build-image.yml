@@ -63,10 +63,22 @@ jobs:
           sudo ln -sf /etc/systemd/system/pumpsleeper-firstboot.service \
               /mnt/root/etc/systemd/system/multi-user.target.wants/pumpsleeper-firstboot.service
 
-          # Copy update timer files into root filesystem so firstboot.sh can install them
-          sudo mkdir -p /mnt/root/usr/local/lib
+          # Bake app files directly into the image
+          sudo mkdir -p /mnt/root/usr/local/lib/pumpsleeper
+          sudo cp app/server.py        /mnt/root/usr/local/lib/pumpsleeper/
+          sudo cp app/dashboard.py     /mnt/root/usr/local/lib/pumpsleeper/
+          sudo cp app/db.py            /mnt/root/usr/local/lib/pumpsleeper/
+          sudo cp app/mqtt.py          /mnt/root/usr/local/lib/pumpsleeper/
+          sudo cp app/notifications.py /mnt/root/usr/local/lib/pumpsleeper/
+          sudo cp app/updater.py       /mnt/root/usr/local/lib/pumpsleeper/
+
+          # Copy update timer service files into root filesystem
           sudo cp image/pumpsleeper-update.service /mnt/root/usr/local/lib/pumpsleeper-update.service
           sudo cp image/pumpsleeper-update.timer   /mnt/root/usr/local/lib/pumpsleeper-update.timer
+
+          # Bake the release version into the image so firstboot knows what version it installed
+          VERSION="${{ github.event.release.tag_name || 'dev' }}"
+          echo "$VERSION" | sudo tee /mnt/root/usr/local/lib/pumpsleeper-version > /dev/null
 
           # Place config template and setup guide on the boot partition (FAT32 — user editable)
           sudo cp image/pumpsleeper.conf /mnt/boot/pumpsleeper.conf
