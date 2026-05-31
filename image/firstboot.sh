@@ -106,8 +106,11 @@ fi
 
 # ── System dependencies ───────────────────────────────────────────────────────
 echo "[3/8] Installing system packages..."
+# Pre-answer iptables-persistent prompts so they don't block the install
+echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
+echo iptables-persistent iptables-persistent/autosave_v6 boolean false | debconf-set-selections
 apt-get update -qq
-apt-get install -y -qq \
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
     python3 python3-pip \
     network-manager \
     iptables iptables-persistent \
