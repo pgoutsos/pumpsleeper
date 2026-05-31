@@ -485,6 +485,38 @@ TEMPLATE = """<!DOCTYPE html>
   .cycle-progress { font-size:12px; color:var(--yellow); }
   .cycle-done { font-size:12px; color:var(--green); }
   .cycle-error { font-size:12px; color:var(--red); }
+  /* Tab nav */
+  .tab-nav { display:flex; gap:4px; padding:0 24px; border-bottom:1px solid var(--border); background:var(--bg); }
+  .tab-btn { padding:10px 18px; font-size:13px; font-weight:500; color:var(--muted);
+             background:transparent; border:none; border-bottom:2px solid transparent;
+             cursor:pointer; transition:color 0.15s; margin-bottom:-1px; }
+  .tab-btn:hover { color:var(--text); }
+  .tab-btn.active { color:var(--blue); border-bottom-color:var(--blue); }
+  .tab-panel { display:none; }
+  .tab-panel.active { display:block; }
+  /* Settings page */
+  .settings-grid { display:grid; gap:16px; padding:20px 24px; max-width:700px; }
+  .settings-section { font-size:11px; text-transform:uppercase; letter-spacing:0.8px;
+                      color:var(--muted); margin:8px 0 4px; }
+  .form-row { display:flex; flex-direction:column; gap:4px; }
+  .form-row label { font-size:12px; color:var(--muted); }
+  .form-input { background:var(--bg); border:1px solid var(--border); border-radius:6px;
+                color:var(--text); font-size:13px; padding:7px 10px; outline:none; width:100%; }
+  .form-input:focus { border-color:var(--blue); }
+  .form-row-inline { display:flex; align-items:center; gap:10px; }
+  .toggle-label { display:flex; align-items:center; gap:8px; cursor:pointer; font-size:13px; }
+  .toggle-label input[type=checkbox] { width:16px; height:16px; accent-color:var(--blue); cursor:pointer; }
+  .save-btn { padding:8px 22px; border-radius:6px; border:none; background:var(--blue);
+              color:#fff; font-size:13px; font-weight:600; cursor:pointer; }
+  .save-btn:hover { opacity:0.85; }
+  .test-btn { padding:6px 14px; border-radius:6px; border:1px solid var(--border);
+              background:transparent; color:var(--muted); font-size:12px; cursor:pointer; }
+  .test-btn:hover { color:var(--text); border-color:var(--muted); }
+  .settings-msg { font-size:12px; margin-top:6px; min-height:18px; }
+  .settings-msg.ok  { color:var(--green); }
+  .settings-msg.err { color:var(--red); }
+  .two-row-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  @media (max-width:500px) { .two-row-grid { grid-template-columns:1fr; } }
 </style>
 </head>
 <body>
@@ -496,6 +528,14 @@ TEMPLATE = """<!DOCTYPE html>
     <span id="refresh-info">Loading…</span>
   </div>
 </header>
+
+<!-- Tab navigation -->
+<div class="tab-nav">
+  <button class="tab-btn active" onclick="showTab('dashboard')">Dashboard</button>
+  <button class="tab-btn" onclick="showTab('settings')">Settings</button>
+</div>
+
+<div id="tab-dashboard" class="tab-panel active">
 
 <!-- Auth failure banner -->
 <div class="auth-banner" id="auth-banner">
@@ -610,6 +650,111 @@ TEMPLATE = """<!DOCTYPE html>
     </div>
   </div>
 </div>
+
+</div><!-- end tab-dashboard -->
+
+<!-- Settings tab -->
+<div id="tab-settings" class="tab-panel">
+<div class="settings-grid">
+
+  <!-- ── Email ─────────────────────────────────────────────────── -->
+  <div class="card">
+    <div class="section-title">Email Notifications</div>
+    <div style="display:flex;flex-direction:column;gap:12px;margin-top:4px">
+      <label class="toggle-label">
+        <input type="checkbox" id="email_enabled">
+        Enable email notifications
+      </label>
+      <div class="two-row-grid">
+        <div class="form-row">
+          <label>SMTP Host</label>
+          <input class="form-input" id="email_smtp_host" placeholder="smtp.gmail.com">
+        </div>
+        <div class="form-row">
+          <label>SMTP Port</label>
+          <input class="form-input" id="email_smtp_port" placeholder="587">
+        </div>
+      </div>
+      <div class="two-row-grid">
+        <div class="form-row">
+          <label>Username</label>
+          <input class="form-input" id="email_smtp_user" placeholder="you@gmail.com">
+        </div>
+        <div class="form-row">
+          <label>Password / App password</label>
+          <input class="form-input" type="password" id="email_smtp_pass" placeholder="••••••••">
+        </div>
+      </div>
+      <div class="two-row-grid">
+        <div class="form-row">
+          <label>From address</label>
+          <input class="form-input" id="email_from" placeholder="pumpsleeper@gmail.com">
+        </div>
+        <div class="form-row">
+          <label>Send to</label>
+          <input class="form-input" id="email_to" placeholder="you@example.com">
+        </div>
+      </div>
+      <div>
+        <button class="test-btn" id="email-test-btn" onclick="sendTest('email')">Send test email</button>
+        <span class="settings-msg" id="email-test-msg"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Ntfy ──────────────────────────────────────────────────── -->
+  <div class="card">
+    <div class="section-title">Ntfy Push Notifications</div>
+    <div style="display:flex;flex-direction:column;gap:12px;margin-top:4px">
+      <label class="toggle-label">
+        <input type="checkbox" id="ntfy_enabled">
+        Enable ntfy notifications
+      </label>
+      <div class="form-row">
+        <label>Ntfy server URL</label>
+        <input class="form-input" id="ntfy_url" placeholder="https://ntfy.sh">
+      </div>
+      <div class="two-row-grid">
+        <div class="form-row">
+          <label>Topic (keep this private)</label>
+          <input class="form-input" id="ntfy_topic" placeholder="my-pumpsleeper-alerts">
+        </div>
+        <div class="form-row">
+          <label>Access token (optional)</label>
+          <input class="form-input" type="password" id="ntfy_token" placeholder="tk_...">
+        </div>
+      </div>
+      <p style="font-size:11px;color:var(--muted)">
+        Install the free <strong>ntfy</strong> app, subscribe to your topic, and you'll get instant push alerts.
+        Use a unique random topic name so only you receive the notifications.
+      </p>
+      <div>
+        <button class="test-btn" id="ntfy-test-btn" onclick="sendTest('ntfy')">Send test notification</button>
+        <span class="settings-msg" id="ntfy-test-msg"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Triggers ──────────────────────────────────────────────── -->
+  <div class="card">
+    <div class="section-title">Notification Triggers</div>
+    <div style="display:flex;flex-direction:column;gap:10px;margin-top:4px">
+      <label class="toggle-label"><input type="checkbox" id="trigger_backup_pump_ran"> Backup pump ran</label>
+      <label class="toggle-label"><input type="checkbox" id="trigger_main_pump_ran"> Main pump ran</label>
+      <label class="toggle-label"><input type="checkbox" id="trigger_high_water"> High water alert</label>
+      <label class="toggle-label"><input type="checkbox" id="trigger_device_offline"> Device offline</label>
+    </div>
+  </div>
+
+  <!-- ── Save ──────────────────────────────────────────────────── -->
+  <div style="display:flex;align-items:center;gap:14px">
+    <button class="save-btn" onclick="saveSettings()">Save Settings</button>
+    <span class="settings-msg" id="save-msg"></span>
+    <span id="unsaved-msg" style="display:none;font-size:12px;color:var(--yellow)">⚠ Unsaved changes — save before sending a test</span>
+  </div>
+
+</div>
+</div><!-- end tab-settings -->
 
 <script>
 let rssiChart = null;
@@ -1047,6 +1192,116 @@ refresh();
 fetchMode();
 setInterval(refresh, 30000);
 setInterval(fetchMode, 10000);
+
+// ── Tab switching ─────────────────────────────────────────────────────────
+function showTab(name) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    if (b.textContent.trim().toLowerCase() === name) b.classList.add('active');
+  });
+  if (name === 'settings') loadSettings();
+}
+
+// ── Notification settings ─────────────────────────────────────────────────
+function _setMsg(id, text, ok) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = 'settings-msg ' + (ok ? 'ok' : 'err');
+  setTimeout(() => { el.textContent = ''; el.className = 'settings-msg'; }, 5000);
+}
+
+let _settingsDirty = false;
+
+function _markDirty() {
+  _settingsDirty = true;
+  document.getElementById('unsaved-msg').style.display = '';
+}
+
+function _markClean() {
+  _settingsDirty = false;
+  document.getElementById('unsaved-msg').style.display = 'none';
+  // Clear any "save first" warnings on the test buttons
+  ['email-test-msg','ntfy-test-msg'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el && el.textContent.includes('Save')) { el.textContent = ''; el.className = 'settings-msg'; }
+  });
+}
+
+async function loadSettings() {
+  try {
+    const r = await fetch('/api/settings/notifications');
+    const d = await r.json();
+    const fields = ['email_smtp_host','email_smtp_port','email_smtp_user',
+                    'email_from','email_to','ntfy_url','ntfy_topic'];
+    fields.forEach(f => { if (document.getElementById(f)) document.getElementById(f).value = d[f] || ''; });
+    // passwords — only set placeholder if saved, never expose value
+    ['email_smtp_pass','ntfy_token'].forEach(f => {
+      const el = document.getElementById(f);
+      if (el) { el.value = ''; el.placeholder = d[f + '_saved'] ? '(saved)' : ''; }
+    });
+    document.getElementById('email_enabled').checked = d.email_enabled === '1';
+    document.getElementById('ntfy_enabled').checked  = d.ntfy_enabled  === '1';
+    ['backup_pump_ran','main_pump_ran','high_water','device_offline'].forEach(ev => {
+      const el = document.getElementById('trigger_' + ev);
+      if (el) el.checked = d['trigger_' + ev] !== '0';
+    });
+    _markClean();
+    // Attach dirty listeners after populating values
+    document.querySelectorAll('#tab-settings input').forEach(el => {
+      el.addEventListener('change', _markDirty);
+      el.addEventListener('input',  _markDirty);
+    });
+  } catch(e) { console.error('Failed to load settings', e); }
+}
+
+async function saveSettings() {
+  const data = {
+    email_enabled:   document.getElementById('email_enabled').checked  ? '1' : '0',
+    ntfy_enabled:    document.getElementById('ntfy_enabled').checked    ? '1' : '0',
+    email_smtp_host: document.getElementById('email_smtp_host').value,
+    email_smtp_port: document.getElementById('email_smtp_port').value,
+    email_smtp_user: document.getElementById('email_smtp_user').value,
+    email_from:      document.getElementById('email_from').value,
+    email_to:        document.getElementById('email_to').value,
+    ntfy_url:        document.getElementById('ntfy_url').value,
+    ntfy_topic:      document.getElementById('ntfy_topic').value,
+  };
+  // Only send passwords if user typed something new
+  const ep = document.getElementById('email_smtp_pass').value;
+  const nt = document.getElementById('ntfy_token').value;
+  if (ep) data.email_smtp_pass = ep;
+  if (nt) data.ntfy_token = nt;
+  ['backup_pump_ran','main_pump_ran','high_water','device_offline'].forEach(ev => {
+    data['trigger_' + ev] = document.getElementById('trigger_' + ev).checked ? '1' : '0';
+  });
+  try {
+    const r = await fetch('/api/settings/notifications', {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data)
+    });
+    const d = await r.json();
+    if (d.ok) _markClean();
+    _setMsg('save-msg', d.ok ? '✓ Saved' : ('Error: ' + d.error), d.ok);
+  } catch(e) { _setMsg('save-msg', 'Save failed', false); }
+}
+
+async function sendTest(channel) {
+  if (_settingsDirty) {
+    _setMsg(channel + '-test-msg', '⚠ Save your settings first before sending a test.', false);
+    return;
+  }
+  const msgId = channel + '-test-msg';
+  document.getElementById(msgId).textContent = 'Sending…';
+  try {
+    const r = await fetch('/api/settings/notifications/test', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({channel})
+    });
+    const d = await r.json();
+    _setMsg(msgId, d.ok ? '✓ Sent!' : ('✗ ' + d.error), d.ok);
+  } catch(e) { _setMsg(msgId, '✗ Request failed', false); }
+}
 </script>
 </body>
 </html>"""
@@ -1197,6 +1452,35 @@ def api_mode_set():
         return jsonify(r.json()), r.status_code
     except Exception:
         return jsonify({"error": "server unreachable"}), 502
+
+@app.route("/api/settings/notifications", methods=["GET"])
+def api_settings_get():
+    from notifications import get_settings
+    cfg = get_settings()
+    # Never expose raw passwords — just signal whether they're saved
+    cfg["email_smtp_pass_saved"] = bool(cfg.get("email_smtp_pass"))
+    cfg["ntfy_token_saved"]      = bool(cfg.get("ntfy_token"))
+    cfg.pop("email_smtp_pass", None)
+    cfg.pop("ntfy_token", None)
+    return jsonify(cfg)
+
+@app.route("/api/settings/notifications", methods=["POST"])
+def api_settings_save():
+    from notifications import save_settings
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        save_settings(data)
+        return jsonify({"ok": True})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+@app.route("/api/settings/notifications/test", methods=["POST"])
+def api_settings_test():
+    from notifications import send_test
+    data    = request.get_json(force=True, silent=True) or {}
+    channel = data.get("channel", "")
+    ok, msg = send_test(channel)
+    return jsonify({"ok": ok, "error": msg if not ok else None})
 
 @app.route("/")
 def index():

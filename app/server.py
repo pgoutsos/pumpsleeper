@@ -34,6 +34,7 @@ from flask import Flask, request, jsonify, Response
 import requests as rlib
 from db import init_db, record, get_mode, set_device_ip, get_device_ip, set_hotspot_connected
 import mqtt
+import notifications as notif
 
 # Persistent session with automatic retry — reuses connections but retries once on
 # stale-connection failures (RemoteDisconnected) which are common with Keep-Alive.
@@ -187,7 +188,9 @@ def _check_hotspot_connected(device_ip: str):
 def _hotspot_checker_loop():
     """Background thread: poll hotspot every 30 s and update DB + MQTT."""
     import time
+    from db import get_hotspot_connected as _get_connected
     time.sleep(15)   # brief startup delay so DB is ready
+    _prev_connected = None
     while True:
         try:
             device_ip = get_device_ip()
@@ -197,6 +200,11 @@ def _hotspot_checker_loop():
                     set_hotspot_connected(connected)
                     mqtt.publish_hotspot_status(connected)
                     log.debug(f"HOTSPOT  {device_ip}  connected={connected}")
+                    # Fire offline notification on transition True → False only
+                    if _prev_connected is True and connected is False:
+                        notif.notify(notif.EVENT_DEVICE_OFFLINE,
+                                     f"Device ({device_ip}) is no longer on the hotspot.")
+                    _prev_connected = connected
         except Exception as exc:
             log.error(f"HOTSPOT  checker error: {exc}")
         time.sleep(30)
@@ -445,13 +453,20 @@ def bbs_json():
         _amps = inner.get("mamp", 0) / 1000
         if inner["motor"]:   # main pump
             mqtt.publish_main_pump_run(iso_ts, dur, gal, _amps)
+            notif.notify(notif.EVENT_MAIN_PUMP,
+                         f"Duration: {dur}s · Est. {gal} gal · {_amps:.2f}A")
         else:                # backup pump
             _batt_v   = (inner.get("battery_voltage", 0) / 1000) or None
             _loaded_v = (inner.get("loaded", 0) / 1000) or None
             mqtt.publish_backup_pump_run(iso_ts, dur, gal, _amps, None,
                                          battery_v=_batt_v, loaded_v=_loaded_v)
+            notif.notify(notif.EVENT_BACKUP_PUMP,
+                         f"Duration: {dur}s · Est. {gal} gal · {_amps:.2f}A"
+                         + (f" · Battery: {_batt_v:.3f}V" if _batt_v else ""))
     elif "high_water" in inner:
         mqtt.publish_water_sensor("high_water", bool(inner["high_water"]))
+        if inner["high_water"]:
+            notif.notify(notif.EVENT_HIGH_WATER, "High water sensor triggered.")
     elif "low_water" in inner:
         mqtt.publish_water_sensor("low_water", bool(inner["low_water"]))
 
