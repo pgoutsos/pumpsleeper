@@ -183,7 +183,7 @@ echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-pumpsleeper.conf
 netfilter-persistent save
 
 cat > /etc/sudoers.d/pumpsleeper-hotspot \
-    <<< "$RUN_USER ALL=(ALL) NOPASSWD: /usr/bin/nmcli con down PumpSleeper-Hotspot, /usr/bin/nmcli con up PumpSleeper-Hotspot, /usr/bin/systemctl restart pumpsleeper, /usr/bin/systemctl restart pumpsleeper-dashboard"
+    <<< "$RUN_USER ALL=(ALL) NOPASSWD: /usr/bin/nmcli con down PumpSleeper-Hotspot, /usr/bin/nmcli con up PumpSleeper-Hotspot"
 chmod 440 /etc/sudoers.d/pumpsleeper-hotspot
 
 # ── systemd services ──────────────────────────────────────────────────────────
