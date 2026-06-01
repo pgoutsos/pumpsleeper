@@ -153,6 +153,39 @@ def set_hotspot_connected(connected: bool):
 
 
 # ---------------------------------------------------------------------------
+# UI theme — stored on the server, but kept SEPARATELY for the desktop and
+# mobile layouts (keys: ui_theme_desktop / ui_theme_mobile).
+# ---------------------------------------------------------------------------
+VALID_THEMES  = ("auto", "dark", "light")
+VALID_LAYOUTS = ("desktop", "mobile")
+
+def _theme_key(layout: str) -> str:
+    return "ui_theme_mobile" if layout == "mobile" else "ui_theme_desktop"
+
+def get_ui_theme(layout: str = "desktop") -> str:
+    """Return the theme for the given layout: 'auto' | 'dark' | 'light' (default 'auto')."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key = ?", (_theme_key(layout),)
+        ).fetchone()
+    return row["value"] if row and row["value"] in VALID_THEMES else "auto"
+
+def set_ui_theme(theme: str, layout: str = "desktop"):
+    """Persist the theme for one layout. Raises ValueError for unknown values."""
+    if theme not in VALID_THEMES:
+        raise ValueError(f"Unknown theme {theme!r}. Valid: {VALID_THEMES}")
+    if layout not in VALID_LAYOUTS:
+        raise ValueError(f"Unknown layout {layout!r}. Valid: {VALID_LAYOUTS}")
+    with _write_lock:
+        with _connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                (_theme_key(layout), theme)
+            )
+            conn.commit()
+
+
+# ---------------------------------------------------------------------------
 # Write
 # ---------------------------------------------------------------------------
 def record(kind: str, payload: dict) -> str:

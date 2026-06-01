@@ -379,6 +379,20 @@ TEMPLATE = """<!DOCTYPE html>
     --text: #e2e8f0; --muted: #8892a4; --green: #22c55e;
     --red: #ef4444; --yellow: #f59e0b; --blue: #3b82f6; --purple: #a855f7;
   }
+  /* Light palette — applied for explicit light, or auto + OS light preference */
+  :root[data-theme="light"] {
+    --bg: #f4f6fa; --card: #ffffff; --border: #d9dee8;
+    --text: #1d2430; --muted: #5b6675; --green: #16a34a;
+    --red: #dc2626; --yellow: #d97706; --blue: #2563eb; --purple: #9333ea;
+  }
+  @media (prefers-color-scheme: light) {
+    :root[data-theme="auto"] {
+      --bg: #f4f6fa; --card: #ffffff; --border: #d9dee8;
+      --text: #1d2430; --muted: #5b6675; --green: #16a34a;
+      --red: #dc2626; --yellow: #d97706; --blue: #2563eb; --purple: #9333ea;
+    }
+  }
+  .theme-btn.active { border-color: var(--blue); color: var(--blue); }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; }
   header { display: flex; align-items: center; justify-content: space-between; padding: 16px 24px;
@@ -661,6 +675,18 @@ TEMPLATE = """<!DOCTYPE html>
 <div id="tab-settings" class="tab-panel">
 <div class="settings-grid">
 
+  <!-- ── Appearance ───────────────────────────────────────────────── -->
+  <div class="card full-width" id="appearance-card">
+    <div class="section-title">Appearance</div>
+    <div style="display:flex;align-items:center;gap:10px;margin-top:6px;flex-wrap:wrap">
+      <span style="font-size:13px;color:var(--muted)">Theme</span>
+      <button class="test-btn theme-btn" data-theme="auto"  onclick="setTheme('auto')">Auto</button>
+      <button class="test-btn theme-btn" data-theme="dark"  onclick="setTheme('dark')">Dark</button>
+      <button class="test-btn theme-btn" data-theme="light" onclick="setTheme('light')">Light</button>
+      <span style="font-size:11px;color:var(--muted)">Auto follows this device's light/dark setting. Saved separately for desktop and mobile.</span>
+    </div>
+  </div>
+
   <!-- ── Updates ──────────────────────────────────────────────────── -->
   <div class="card full-width" id="update-card">
     <div class="section-title">Updates</div>
@@ -678,8 +704,8 @@ TEMPLATE = """<!DOCTYPE html>
         Automatically install updates overnight
       </label>
       <div id="release-notes-box" style="display:none">
-        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Release notes</div>
-        <pre id="release-notes" style="font-family:inherit;font-size:12px;color:var(--text);white-space:pre-wrap;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px;max-height:200px;overflow-y:auto"></pre>
+        <div id="release-notes-title" style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Release notes</div>
+        <div id="release-notes" style="font-size:12.5px;line-height:1.5;color:var(--text);white-space:normal;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 12px;max-height:240px;overflow-y:auto"></div>
       </div>
       <div id="update-status-row" style="display:none;align-items:center;gap:12px">
         <button class="save-btn" id="apply-update-btn" onclick="applyUpdate()" style="background:var(--green)">Apply Update</button>
@@ -1035,12 +1061,12 @@ function update(d) {
     rssiChart = new Chart(ctx, {
       type: 'line',
       data: { labels, datasets: [{ label: 'RSSI (dBm)', data: values,
-        borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.1)',
-        pointRadius: 3, pointBackgroundColor: '#3b82f6', tension: 0.3, fill: true }] },
+        borderColor: cssVar('--blue'), backgroundColor: 'rgba(59,130,246,0.1)',
+        pointRadius: 3, pointBackgroundColor: cssVar('--blue'), tension: 0.3, fill: true }] },
       options: { responsive: true, maintainAspectRatio: false,
         scales: {
-          x: { ticks: { color: '#8892a4', maxTicksLimit: 8, maxRotation: 0 }, grid: { color: '#2a2d3a' } },
-          y: { ticks: { color: '#8892a4' }, grid: { color: '#2a2d3a' } }
+          x: { ticks: { color: cssVar('--muted'), maxTicksLimit: 8, maxRotation: 0 }, grid: { color: cssVar('--border') } },
+          y: { ticks: { color: cssVar('--muted') }, grid: { color: cssVar('--border') } }
         },
         plugins: { legend: { display: false } }
       }
@@ -1222,8 +1248,60 @@ function _stopCyclePoller() {
   if (_cyclePoller) { clearInterval(_cyclePoller); _cyclePoller = null; }
 }
 
+// ── Theme ─────────────────────────────────────────────────────────────────────
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+function _highlightThemeButtons(pref) {
+  document.querySelectorAll('.theme-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.theme === pref));
+}
+function refreshChartTheme() {
+  if (!rssiChart) return;
+  const blue = cssVar('--blue'), muted = cssVar('--muted'), border = cssVar('--border');
+  const ds = rssiChart.data.datasets[0];
+  ds.borderColor = blue; ds.pointBackgroundColor = blue;
+  rssiChart.options.scales.x.ticks.color = muted;
+  rssiChart.options.scales.y.ticks.color = muted;
+  rssiChart.options.scales.x.grid.color  = border;
+  rssiChart.options.scales.y.grid.color  = border;
+  rssiChart.update('none');
+}
+function applyTheme(pref) {
+  document.documentElement.dataset.theme = pref;   // CSS resolves 'auto' via media query
+  _highlightThemeButtons(pref);
+  refreshChartTheme();
+}
+async function setTheme(pref) {
+  applyTheme(pref);
+  try {
+    await fetch('/api/settings/theme', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({theme: pref})
+    });
+  } catch(e) {}
+}
+async function loadTheme() {
+  try {
+    const r = await fetch('/api/settings/theme');
+    const d = await r.json();
+    applyTheme(d.theme || 'auto');
+  } catch(e) {
+    _highlightThemeButtons(document.documentElement.dataset.theme || 'auto');
+  }
+}
+// Recolor the chart when the OS theme flips while in 'auto'.
+if (window.matchMedia) {
+  try {
+    window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+      if ((document.documentElement.dataset.theme || 'auto') === 'auto') refreshChartTheme();
+    });
+  } catch(e) {}
+}
+
 refresh();
 fetchMode();
+loadTheme();
 setInterval(refresh, 30000);
 setInterval(fetchMode, 10000);
 
@@ -1235,7 +1313,7 @@ function showTab(name) {
   document.querySelectorAll('.tab-btn').forEach(b => {
     if (b.textContent.trim().toLowerCase() === name) b.classList.add('active');
   });
-  if (name === 'settings') { loadSettings(); loadUpdateInfo(); }
+  if (name === 'settings') { loadSettings(); loadUpdateInfo(); loadTheme(); }
 }
 
 // ── Notification settings ─────────────────────────────────────────────────
@@ -1342,13 +1420,56 @@ async function loadUpdateInfo() {
   } catch(e) {}
 }
 
+// Minimal, XSS-safe markdown renderer for GitHub release bodies.
+function _renderNotes(md) {
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const inline = s => esc(s)
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`]+)`/g, '<code style="background:var(--card);padding:1px 4px;border-radius:3px">$1</code>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener" style="color:var(--blue)">$1</a>');
+  const out = []; let inList = false;
+  md.split(/\r?\n/).forEach(line => {
+    const t = line.trim();
+    const li = t.match(/^[-*]\s+(.*)$/);
+    const h  = t.match(/^(#{1,6})\s+(.*)$/);
+    if (li) {
+      if (!inList) { out.push('<ul style="margin:4px 0 4px 18px;padding:0">'); inList = true; }
+      out.push('<li style="margin:2px 0">' + inline(li[1]) + '</li>');
+      return;
+    }
+    if (inList) { out.push('</ul>'); inList = false; }
+    if (h)            out.push('<div style="font-weight:700;margin:8px 0 2px">' + inline(h[2]) + '</div>');
+    else if (t === '') out.push('<div style="height:6px"></div>');
+    else               out.push('<div>' + inline(t) + '</div>');
+  });
+  if (inList) out.push('</ul>');
+  return out.join('');
+}
+
 function _showLatest(latest, available) {
   document.getElementById('latest-version').textContent = latest.tag || '—';
   document.getElementById('latest-version').style.color = available ? 'var(--green)' : 'var(--muted)';
-  if (latest.notes) {
-    document.getElementById('release-notes').textContent = latest.notes;
-    document.getElementById('release-notes-box').style.display = '';
+
+  const box   = document.getElementById('release-notes-box');
+  const title = document.getElementById('release-notes-title');
+  const body  = document.getElementById('release-notes');
+  if (available) {
+    // Preview what the pending update contains.
+    title.textContent = "What's new in " + (latest.tag || 'the next version');
+    title.style.color = 'var(--green)';
+    body.innerHTML = latest.notes
+      ? _renderNotes(latest.notes)
+      : '<span style="color:var(--muted)">No release notes were provided for this version.</span>';
+    box.style.display = '';
+  } else if (latest.notes) {
+    title.textContent = 'Release notes' + (latest.tag ? ' · ' + latest.tag : '');
+    title.style.color = 'var(--muted)';
+    body.innerHTML = _renderNotes(latest.notes);
+    box.style.display = '';
+  } else {
+    box.style.display = 'none';
   }
+
   const row = document.getElementById('update-status-row');
   if (available) {
     row.style.display = 'flex';
@@ -1528,14 +1649,30 @@ MOBILE_TEMPLATE = """<!DOCTYPE html>
     --bg: #0f1117; --card: #1a1d27; --border: #2a2d3a;
     --text: #e2e8f0; --muted: #8892a4; --green: #22c55e;
     --red: #ef4444; --yellow: #f59e0b; --blue: #3b82f6; --purple: #a855f7;
-    --nav-h: 60px;
+    --nav-h: 60px; --bar-bg: rgba(15,17,23,0.94);
   }
+  /* Light palette — explicit light, or auto + OS light preference */
+  :root[data-theme="light"] {
+    --bg: #f4f6fa; --card: #ffffff; --border: #d9dee8;
+    --text: #1d2430; --muted: #5b6675; --green: #16a34a;
+    --red: #dc2626; --yellow: #d97706; --blue: #2563eb; --purple: #9333ea;
+    --bar-bg: rgba(244,246,250,0.94);
+  }
+  @media (prefers-color-scheme: light) {
+    :root[data-theme="auto"] {
+      --bg: #f4f6fa; --card: #ffffff; --border: #d9dee8;
+      --text: #1d2430; --muted: #5b6675; --green: #16a34a;
+      --red: #dc2626; --yellow: #d97706; --blue: #2563eb; --purple: #9333ea;
+      --bar-bg: rgba(244,246,250,0.94);
+    }
+  }
+  .theme-btn.active { border-color: var(--blue); color: var(--blue); }
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
   body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif;
          font-size: 15px; padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom)); }
 
   /* ── Sticky top bar ─────────────────────────────────────────── */
-  header { position: sticky; top: 0; z-index: 20; background: rgba(15,17,23,0.92);
+  header { position: sticky; top: 0; z-index: 20; background: var(--bar-bg);
            backdrop-filter: blur(8px); border-bottom: 1px solid var(--border);
            padding: 12px 16px calc(12px + env(safe-area-inset-top)); }
   .topline { display: flex; align-items: center; justify-content: space-between; }
@@ -1676,7 +1813,7 @@ MOBILE_TEMPLATE = """<!DOCTYPE html>
   .tab-panel.active { display:block; padding-bottom:18px; }
   .bottom-nav { position:fixed; bottom:0; left:0; right:0; z-index:30; display:flex;
                 height:var(--nav-h); padding-bottom:env(safe-area-inset-bottom);
-                background:rgba(15,17,23,0.96); backdrop-filter:blur(8px);
+                background:var(--bar-bg); backdrop-filter:blur(8px);
                 border-top:1px solid var(--border); }
   .tab-btn { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
              gap:3px; background:transparent; border:none; color:var(--muted);
@@ -1942,6 +2079,24 @@ def api_update_status():
     from updater import get_update_state
     return jsonify(get_update_state())
 
+@app.route("/api/settings/theme", methods=["GET"])
+def api_theme_get():
+    from db import get_ui_theme
+    layout = "mobile" if _wants_mobile(request) else "desktop"
+    return jsonify({"theme": get_ui_theme(layout), "layout": layout})
+
+@app.route("/api/settings/theme", methods=["POST"])
+def api_theme_set():
+    from db import set_ui_theme
+    data   = request.get_json(force=True, silent=True) or {}
+    theme  = data.get("theme", "auto")
+    layout = "mobile" if _wants_mobile(request) else "desktop"
+    try:
+        set_ui_theme(theme, layout)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "theme": theme, "layout": layout})
+
 @app.route("/api/settings/notifications", methods=["GET"])
 def api_settings_get():
     from notifications import get_settings
@@ -1973,8 +2128,14 @@ def api_settings_test():
 
 @app.route("/")
 def index():
+    from db import get_ui_theme
     mobile = _wants_mobile(request)
-    resp = make_response(render_template_string(MOBILE_TEMPLATE if mobile else TEMPLATE))
+    theme  = get_ui_theme("mobile" if mobile else "desktop")
+    html = render_template_string(MOBILE_TEMPLATE if mobile else TEMPLATE)
+    # Inject the saved theme on <html> so the correct palette paints with no flash.
+    html = html.replace('<html lang="en">',
+                        f'<html lang="en" data-theme="{theme}">', 1)
+    resp = make_response(html)
     # Remember an explicit override so manual reloads keep the chosen layout.
     forced = request.args.get("desktop")
     if forced in ("0", "1"):
