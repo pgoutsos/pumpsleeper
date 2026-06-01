@@ -4,6 +4,21 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v1.7] — 2026-05-31
+
+### New
+- Appearance setting with Auto / Dark / Light theme — stored on the server and kept separately for the desktop and mobile layouts; Auto follows the device's OS light/dark preference
+- Release-notes preview — when an update is available, the dashboard shows a "What's new in <version>" summary of the next release's notes before you apply it
+
+### Fixed
+- Update status now progresses reliably from start to finish: progress is persisted to disk so it survives the dashboard restart, and the "update installed" notification is sent before the restart so it actually fires
+- Dashboard now shows a clean completion (and auto-reloads onto the new version) instead of stalling mid-update
+
+### Improved
+- Manual updates run in a detached process, decoupled from the dashboard service that restarts during the update
+
+---
+
 ## [v1.4] — 2026-05-31
 
 ### New
