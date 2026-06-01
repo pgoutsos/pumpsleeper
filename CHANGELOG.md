@@ -4,6 +4,13 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v1.9] — 2026-05-31
+
+### Fixed
+- Dashboard failed to load on v1.8 — a regex in the new release-notes renderer was mangled into an invalid pattern, which halted all dashboard JavaScript. Hotfix restores the dashboard
+
+---
+
 ## [v1.8] — 2026-05-31
 
 ### New

@@ -1428,7 +1428,7 @@ function _renderNotes(md) {
     .replace(/`([^`]+)`/g, '<code style="background:var(--card);padding:1px 4px;border-radius:3px">$1</code>')
     .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener" style="color:var(--blue)">$1</a>');
   const out = []; let inList = false;
-  md.split(/\r?\n/).forEach(line => {
+  md.split(/\\r?\\n/).forEach(line => {
     const t = line.trim();
     const li = t.match(/^[-*]\s+(.*)$/);
     const h  = t.match(/^(#{1,6})\s+(.*)$/);
