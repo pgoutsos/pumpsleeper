@@ -4,7 +4,7 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
-## [v1.7] — 2026-05-31
+## [v1.8] — 2026-05-31
 
 ### New
 - Appearance setting with Auto / Dark / Light theme — stored on the server and kept separately for the desktop and mobile layouts; Auto follows the device's OS light/dark preference
