@@ -103,7 +103,7 @@ jobs:
         run: |
           VERSION="${{ github.event.release.tag_name }}"
           # Extract the section for this version from CHANGELOG.md
-          NOTES=$(awk "/^## \[${VERSION}\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md)
+          NOTES=$(awk "/^## \[${VERSION}\]/{found=1; next} found && /^---[[:space:]]*\$/{exit} found && /^## \[/{exit} found{print}" CHANGELOG.md)
           # Write to a file so the upload step can read it
           echo "$NOTES" > release-notes.txt
           echo "Release notes extracted for $VERSION:"
