@@ -1387,58 +1387,83 @@ async function saveAutoUpdate() {
   } catch(e) {}
 }
 
+const _PHASE_LABEL = {
+  starting:   '◷ Starting update…',
+  downloading:'⬇ Downloading update files…',
+  installing: '⚙ Installing new version…',
+  restarting: '↺ Restarting services — dashboard will reload shortly…',
+};
+
+function _finishUpdate(prog, btn, ok, version) {
+  if (_updatePoller) { clearInterval(_updatePoller); _updatePoller = null; }
+  prog.style.display = '';
+  prog.style.color = ok ? 'var(--green)' : 'var(--red)';
+  prog.textContent = ok
+    ? '✓ Update complete' + (version ? ' — now on ' + version : '') + '. Reloading…'
+    : '✗ Update failed';
+  if (ok) {
+    // The dashboard has (or is about to) restart on the new code — reload so
+    // the page reflects the new version once it's back up.
+    setTimeout(() => window.location.reload(), 4000);
+  } else {
+    btn.disabled = false;
+  }
+}
+
 async function applyUpdate() {
   if (!confirm('Apply the update now? Services will restart briefly.')) return;
   const btn = document.getElementById('apply-update-btn');
   btn.disabled = true;
+  _setMsg('update-status-msg', '', true);
   const prog = document.getElementById('update-progress');
   prog.style.display = '';
+  prog.style.color = 'var(--yellow)';
   prog.textContent = 'Starting update…';
 
   try {
-    await fetch('/api/update/apply', { method: 'POST' });
+    const r = await fetch('/api/update/apply', { method: 'POST' });
+    const d = await r.json();
+    if (!d.ok) {
+      _setMsg('update-status-msg', '✗ ' + (d.message || 'Failed to start update'), false);
+      prog.style.display = 'none';
+      btn.disabled = false;
+      return;
+    }
   } catch(e) {
     _setMsg('update-status-msg', '✗ Failed to start update', false);
+    prog.style.display = 'none';
     btn.disabled = false;
     return;
   }
 
-  let _updateStarted = true;
-  let _pollFailCount = 0;
+  // Status now lives in a disk-backed state file, so it survives the dashboard
+  // restart. We poll it; "done"/"error" are terminal. While the dashboard is
+  // restarting the fetch fails transiently — we keep polling until it returns.
+  let _sawRunning = false;
   if (_updatePoller) clearInterval(_updatePoller);
   _updatePoller = setInterval(async () => {
     try {
       const r = await fetch('/api/update/status');
       const s = await r.json();
-      _pollFailCount = 0;
 
-      if (s.phase === 'downloading') {
-        prog.textContent = '⬇ Downloading update files…';
-      } else if (s.phase === 'restarting') {
-        prog.textContent = '↺ Restarting services — dashboard will reload shortly…';
+      if (['starting','downloading','installing','restarting'].includes(s.phase)) {
+        _sawRunning = true;
+        prog.style.color = 'var(--yellow)';
+        prog.textContent = _PHASE_LABEL[s.phase] || ('… ' + s.phase);
       } else if (s.phase === 'done') {
-        clearInterval(_updatePoller); _updatePoller = null;
-        prog.style.display = 'none';
-        btn.disabled = false;
-        loadUpdateInfo();
+        _finishUpdate(prog, btn, true, s.version);
       } else if (s.phase === 'error') {
-        clearInterval(_updatePoller); _updatePoller = null;
+        if (_updatePoller) { clearInterval(_updatePoller); _updatePoller = null; }
         prog.style.display = 'none';
         _setMsg('update-status-msg', '✗ ' + (s.error || 'Update failed'), false);
         btn.disabled = false;
-      } else if (s.phase === 'idle' && _updateStarted) {
-        // Back to idle — dashboard restarted after update
-        clearInterval(_updatePoller); _updatePoller = null;
-        prog.style.display = 'none';
-        btn.disabled = false;
-        loadUpdateInfo();   // shows "✓ Successfully updated" from last_update.json
       }
+      // phase === 'idle' before we ever saw it run: keep waiting for the
+      // detached worker to seed the state. Do nothing.
     } catch(e) {
-      // Fetch failed — dashboard is restarting
-      _pollFailCount++;
-      if (_pollFailCount >= 2) {
-        prog.textContent = '↺ Dashboard restarting…';
-      }
+      // Dashboard is restarting — surface that and keep polling; the state
+      // file will still say "done" once it's back.
+      if (_sawRunning) prog.textContent = '↺ Dashboard restarting…';
     }
   }, 1000);
 }
