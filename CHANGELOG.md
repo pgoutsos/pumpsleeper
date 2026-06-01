@@ -4,6 +4,20 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v2.1] — 2026-06-01
+
+### New
+- Dashboard login — a single-user sign-in is now required on every visit. The default login is `admin / admin`; you'll be prompted to change it
+- Settings → Security: rename the dashboard user and change the password (via a Change Password dialog), with repeated-failure lockout protecting the login
+- Web access toggle — expose the dashboard over the internet on a public HTTPS address using a Cloudflare quick tunnel, with no Cloudflare account required. The generated URL is shown in Settings and the switch stays locked until you change the default password
+- The current web-access URL is sent to you over email/ntfy whenever it changes (the address is regenerated on every restart)
+- Save Log button in Settings → Debug — downloads the last 2000 log lines from both services as a text file to help with troubleshooting
+
+### Improved
+- The installer now sets up `cloudflared` and grants the service account access to the system journal automatically, so web access and the log export work out of the box on new installs
+
+---
+
 ## [v2.0] — 2026-06-01
 
 ### New

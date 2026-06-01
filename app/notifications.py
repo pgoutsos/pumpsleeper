@@ -28,6 +28,10 @@ EVENT_HIGH_WATER       = "high_water"
 EVENT_DEVICE_OFFLINE   = "device_offline"
 EVENT_UPDATE_AVAILABLE = "update_available"
 EVENT_UPDATE_INSTALLED = "update_installed"
+# Sent whenever the Cloudflare quick-tunnel URL changes. Intentionally NOT in
+# ALL_EVENTS (no per-event toggle) — if you turned on web access you want the
+# new address, so it always sends through whatever channels are enabled.
+EVENT_WEBACCESS_URL    = "webaccess_url"
 
 ALL_EVENTS = [
     EVENT_BACKUP_PUMP, EVENT_MAIN_PUMP, EVENT_HIGH_WATER,
@@ -190,6 +194,7 @@ def notify(event: str, detail: str = ""):
         EVENT_DEVICE_OFFLINE:   ("Device offline",         "high"),
         EVENT_UPDATE_AVAILABLE: ("Update available",       "default"),
         EVENT_UPDATE_INSTALLED: ("Update installed",       "default"),
+        EVENT_WEBACCESS_URL:    ("Web access URL",         "high"),
     }
     title, priority = labels.get(event, (event, "default"))
     body = title + (f"\n\n{detail}" if detail else "")

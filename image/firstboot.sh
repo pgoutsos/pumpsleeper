@@ -122,11 +122,31 @@ pip3 install --break-system-packages --quiet --root-user-action=ignore flask wai
 [[ -n "$MQTT_HOST" ]] && pip3 install --break-system-packages --quiet --root-user-action=ignore paho-mqtt
 echo "      Done."
 
+# ── cloudflared (optional web access via Cloudflare quick tunnel) ─────────────
+echo "[4b/8] Installing cloudflared (for optional web access)..."
+if ! command -v cloudflared >/dev/null 2>&1; then
+    ARCH=$(dpkg --print-architecture)
+    case "$ARCH" in armhf) CF_ARCH=arm ;; *) CF_ARCH="$ARCH" ;; esac
+    if curl -fsSL --max-time 60 \
+        "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}" \
+        -o /usr/local/bin/cloudflared; then
+        chmod +x /usr/local/bin/cloudflared
+        echo "      cloudflared installed."
+    else
+        echo "      WARNING: cloudflared download failed — web access can be enabled later once it's installed."
+    fi
+else
+    echo "      cloudflared already present."
+fi
+
 # ── Service user ──────────────────────────────────────────────────────────────
 echo "[5/8] Creating service user..."
 if ! id "$RUN_USER" &>/dev/null; then
     useradd --system --no-create-home --shell /usr/sbin/nologin "$RUN_USER"
 fi
+# Allow the service user to read the system journal so the dashboard's
+# "Save Log" button can export journalctl output for both services.
+usermod -aG systemd-journal "$RUN_USER" 2>/dev/null || true
 echo "      Done."
 
 # ── Install app files ─────────────────────────────────────────────────────────

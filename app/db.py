@@ -186,6 +186,144 @@ def set_ui_theme(theme: str, layout: str = "desktop"):
 
 
 # ---------------------------------------------------------------------------
+# Generic settings helpers
+# ---------------------------------------------------------------------------
+def _get_setting(key: str, default=None):
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key = ?", (key,)
+        ).fetchone()
+    return row["value"] if row else default
+
+def _set_setting(key: str, value):
+    with _write_lock:
+        with _connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                (key, str(value))
+            )
+            conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Authentication + web-access gate
+# ---------------------------------------------------------------------------
+# A single dashboard user. Credentials start at the factory default admin/admin;
+# the password is stored only as a salted PBKDF2 hash (werkzeug). Web access
+# (Cloudflare quick tunnel) cannot be enabled until the default credentials are
+# changed — see set_web_access().
+from werkzeug.security import generate_password_hash, check_password_hash
+import secrets as _secrets
+
+DEFAULT_USERNAME = "admin"
+DEFAULT_PASSWORD = "admin"
+MIN_PASSWORD_LEN = 8
+
+def _ensure_auth_defaults():
+    """Seed factory admin/admin credentials on first run (idempotent)."""
+    if _get_setting("auth_username") is None:
+        _set_setting("auth_username", DEFAULT_USERNAME)
+    if _get_setting("auth_password_hash") is None:
+        _set_setting("auth_password_hash", generate_password_hash(DEFAULT_PASSWORD))
+    if _get_setting("auth_creds_changed") is None:
+        _set_setting("auth_creds_changed", "0")
+
+def get_auth_username() -> str:
+    """Return the current dashboard username."""
+    _ensure_auth_defaults()
+    return _get_setting("auth_username", DEFAULT_USERNAME)
+
+def verify_password(username: str, password: str) -> bool:
+    """True if username + password match the stored single user."""
+    _ensure_auth_defaults()
+    stored_user = _get_setting("auth_username", DEFAULT_USERNAME)
+    stored_hash = _get_setting("auth_password_hash", "")
+    if username != stored_user or not stored_hash:
+        # Run a dummy check to keep the timing roughly constant.
+        check_password_hash(generate_password_hash("x"), password or "")
+        return False
+    return check_password_hash(stored_hash, password or "")
+
+def is_default_credentials() -> bool:
+    """True while the dashboard is still on the factory admin/admin login."""
+    _ensure_auth_defaults()
+    return _get_setting("auth_creds_changed", "0") != "1"
+
+def set_credentials(new_username: str, new_password: str):
+    """Set a new username + password. Raises ValueError on bad input.
+
+    A password of at least MIN_PASSWORD_LEN characters is required, which also
+    rules out reverting to the 5-character factory password 'admin'. Once set,
+    the dashboard is marked as no longer using default credentials, which is the
+    precondition for enabling web access.
+    """
+    new_username = (new_username or "").strip()
+    new_password = new_password or ""
+    if not new_username:
+        raise ValueError("Username cannot be empty")
+    if len(new_password) < MIN_PASSWORD_LEN:
+        raise ValueError(f"Password must be at least {MIN_PASSWORD_LEN} characters")
+    with _write_lock:
+        with _connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('auth_username', ?)",
+                (new_username,)
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('auth_password_hash', ?)",
+                (generate_password_hash(new_password),)
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('auth_creds_changed', '1')"
+            )
+            conn.commit()
+
+def set_username(new_username: str):
+    """Update only the username (does not touch the password or the
+    default-credentials gate — changing the password is what unlocks web access)."""
+    new_username = (new_username or "").strip()
+    if not new_username:
+        raise ValueError("Username cannot be empty")
+    _set_setting("auth_username", new_username)
+
+def set_password(new_password: str):
+    """Update only the password (PBKDF2 hash) and mark credentials as changed.
+    Requires at least MIN_PASSWORD_LEN characters, so it can never be the
+    factory password 'admin'."""
+    new_password = new_password or ""
+    if len(new_password) < MIN_PASSWORD_LEN:
+        raise ValueError(f"Password must be at least {MIN_PASSWORD_LEN} characters")
+    with _write_lock:
+        with _connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('auth_password_hash', ?)",
+                (generate_password_hash(new_password),)
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('auth_creds_changed', '1')"
+            )
+            conn.commit()
+
+def get_web_access() -> bool:
+    """True if the dashboard is configured to be exposed to the web."""
+    return _get_setting("web_access", "0") == "1"
+
+def set_web_access(enabled: bool):
+    """Persist the web-access intent. Refuses to enable while on default creds."""
+    if enabled and is_default_credentials():
+        raise ValueError("Change the default username and password before enabling web access")
+    _set_setting("web_access", "1" if enabled else "0")
+
+def get_secret_key() -> str:
+    """Return a stable Flask session-signing key, generating one on first use."""
+    key = _get_setting("flask_secret_key")
+    if not key:
+        key = _secrets.token_hex(32)
+        _set_setting("flask_secret_key", key)
+    return key
+
+
+# ---------------------------------------------------------------------------
 # Write
 # ---------------------------------------------------------------------------
 def record(kind: str, payload: dict) -> str:

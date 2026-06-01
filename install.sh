@@ -139,6 +139,23 @@ if [[ "$MQTT_ENABLED" == "true" ]]; then
 fi
 success "Python packages installed"
 
+# ── cloudflared (optional web access via Cloudflare quick tunnel) ─────────────
+header "cloudflared (optional web access)"
+if ! command -v cloudflared >/dev/null 2>&1; then
+    ARCH=$(dpkg --print-architecture)
+    case "$ARCH" in armhf) CF_ARCH=arm ;; *) CF_ARCH="$ARCH" ;; esac
+    if curl -fsSL --max-time 60 \
+        "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}" \
+        -o /usr/local/bin/cloudflared; then
+        chmod +x /usr/local/bin/cloudflared
+        success "cloudflared installed"
+    else
+        info "cloudflared download failed — web access can be enabled later once it's installed"
+    fi
+else
+    info "cloudflared already present"
+fi
+
 # ── Create service user ───────────────────────────────────────────────────────
 header "Service user"
 if ! id "$RUN_USER" &>/dev/null; then
@@ -147,6 +164,10 @@ if ! id "$RUN_USER" &>/dev/null; then
 else
     info "User '$RUN_USER' already exists"
 fi
+# Allow the service user to read the system journal so the dashboard's
+# "Save Log" button can export journalctl output for both services.
+usermod -aG systemd-journal "$RUN_USER" 2>/dev/null || true
+success "Granted '$RUN_USER' read access to the system journal"
 
 # ── Install app files ─────────────────────────────────────────────────────────
 header "Installing app files"

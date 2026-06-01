@@ -5,17 +5,48 @@ Reads events.jsonl written by server.py and serves a live monitoring dashboard.
 """
 
 import os
+import re
+import shutil
 import subprocess
 import threading
+import time
 import requests as rlib
 from datetime import datetime, timezone, timedelta
-from flask import Flask, jsonify, request, render_template_string, make_response
+from flask import (Flask, jsonify, request, render_template_string, make_response,
+                   session, redirect, url_for)
 from db import load_events, init_db, get_mode_switched_ts, get_device_ip, get_hotspot_connected
 
 SERVER_URL    = os.environ.get("PUMPSPY_SERVER_URL", "http://127.0.0.1:8081")
 HOTSPOT_CON   = os.environ.get("PUMPSLEEPER_HOTSPOT_CON", "Hotspot")
+DASH_PORT     = int(os.environ.get("PUMPSLEEPER_DASH_PORT", "8080"))
 
 app = Flask(__name__)
+
+# Session signing key + cookie hardening. The key is persisted in the settings
+# table so logins survive restarts. (Secure-only cookies are intentionally NOT
+# forced: the dashboard is reached over plain http on the LAN as well as https
+# via the tunnel, and a Secure cookie would break the LAN logins.)
+init_db()
+from db import get_secret_key as _get_secret_key
+app.secret_key = _get_secret_key()
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+)
+
+# ---------------------------------------------------------------------------
+# Login gate — every request requires a session, except the login page itself
+# and Flask's static endpoint. (Login is always required, LAN included.)
+# ---------------------------------------------------------------------------
+@app.before_request
+def _require_login():
+    if request.endpoint in ("login", "static"):
+        return
+    if session.get("authed"):
+        return
+    if request.path.startswith("/api/"):
+        return jsonify({"error": "authentication required"}), 401
+    return redirect(url_for("login", next=request.path))
 
 # ---------------------------------------------------------------------------
 
@@ -720,6 +751,59 @@ TEMPLATE = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- ── Security & Web Access ─────────────────────────────────────── -->
+  <div class="card full-width" id="security-card">
+    <div class="section-title">Security &amp; Web Access</div>
+    <div style="display:flex;flex-direction:column;gap:14px;margin-top:6px">
+      <p style="font-size:12px;color:var(--muted);line-height:1.5">
+        The dashboard requires a login. Change the default <strong>admin / admin</strong>
+        credentials before exposing it to the web. &nbsp;<a href="/logout" style="color:var(--blue)">Log out</a>
+      </p>
+      <div class="form-row">
+        <label>User Name</label>
+        <input class="form-input" id="sec_username" autocomplete="username">
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <button class="test-btn" onclick="saveUsername()">Save User Name</button>
+        <button class="test-btn" onclick="openPwModal()">Change Password</button>
+        <span class="settings-msg" id="sec-msg" style="margin-top:0"></span>
+      </div>
+
+      <!-- Change-password modal -->
+      <div id="pw-modal" onclick="if(event.target===this)closePwModal()" style="display:none;position:fixed;inset:0;z-index:100;background:rgba(0,0,0,0.6);align-items:center;justify-content:center;padding:20px">
+        <div style="background:var(--card);border:1px solid var(--border);border-radius:14px;padding:24px;width:100%;max-width:380px">
+          <div class="section-title" style="margin-bottom:14px">Change Password</div>
+          <div class="form-row" style="margin-bottom:12px">
+            <label>New password (min 8 chars)</label>
+            <input class="form-input" type="password" id="pw_new" autocomplete="new-password">
+          </div>
+          <div class="form-row">
+            <label>Confirm new password</label>
+            <input class="form-input" type="password" id="pw_new2" autocomplete="new-password">
+          </div>
+          <span class="settings-msg" id="pw-msg"></span>
+          <div style="display:flex;gap:10px;margin-top:18px;justify-content:flex-end">
+            <button class="test-btn" onclick="closePwModal()">Cancel</button>
+            <button class="save-btn" style="width:auto;padding:10px 20px" onclick="savePassword()">Save</button>
+          </div>
+        </div>
+      </div>
+      <hr style="border:none;border-top:1px solid var(--border);margin:2px 0">
+      <label class="toggle-label" id="webaccess-row" style="opacity:0.5">
+        <input type="checkbox" id="web_access" onchange="toggleWebAccess()" disabled>
+        Make dashboard accessible from the web (Cloudflare tunnel)
+      </label>
+      <div id="webaccess-hint" style="font-size:11px;color:var(--muted);line-height:1.5">
+        Disabled until you change the default credentials.
+      </div>
+      <div id="tunnel-box" style="display:none;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px 14px">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);margin-bottom:6px">Public URL</div>
+        <a id="tunnel-url" href="#" target="_blank" rel="noopener" style="color:var(--blue);word-break:break-all;font-size:14px">—</a>
+        <div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.5">This address changes each time the tunnel restarts (dashboard restart or reboot).</div>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Updates ──────────────────────────────────────────────────── -->
   <div class="card full-width" id="update-card">
     <div class="section-title">Updates</div>
@@ -852,6 +936,16 @@ TEMPLATE = """<!DOCTYPE html>
 <div class="grid" style="grid-template-columns:1fr; padding-top:0">
   <div class="section-title" style="margin-bottom:0">Debug</div>
 </div>
+
+<!-- Debug actions -->
+<div class="grid" style="grid-template-columns:1fr; padding-top:0">
+  <div class="card" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+    <button class="test-btn" id="savelog-btn" onclick="downloadLog()">⬇ Save Log</button>
+    <span style="font-size:12px;color:var(--muted)">Saves the last 2000 log lines from both PumpSleeper services to a file you choose.</span>
+    <span class="settings-msg" id="savelog-msg" style="margin-top:0"></span>
+  </div>
+</div>
+<!-- /debug actions -->
 
 <!-- Unhandled requests (collapsed by default) -->
 <div class="grid" style="grid-template-columns:1fr; padding-top:0">
@@ -1392,7 +1486,7 @@ function showTab(name) {
   document.querySelectorAll('.tab-btn').forEach(b => {
     if ((b.getAttribute('onclick') || '').indexOf("'" + name + "'") !== -1) b.classList.add('active');
   });
-  if (name === 'settings') { loadSettings(); loadUpdateInfo(); loadTheme(); }
+  if (name === 'settings') { loadSettings(); loadUpdateInfo(); loadTheme(); loadSecurity(); }
 }
 
 function showSubTab(name) {
@@ -1404,6 +1498,128 @@ function showSubTab(name) {
     if ((b.getAttribute('onclick') || '').indexOf("'" + name + "'") !== -1) b.classList.add('active');
   });
   if (name === 'signal' && rssiChart) rssiChart.resize();
+}
+
+// ── Debug: download service logs ──────────────────────────────────────────
+function downloadLog() {
+  const msg = document.getElementById('savelog-msg');
+  if (msg) { msg.textContent = 'Preparing log…'; msg.className = 'settings-msg'; }
+  // Navigating to an attachment URL triggers a download without leaving the page;
+  // the browser then prompts for (or uses the configured) save location.
+  window.location.href = '/api/debug/log';
+  setTimeout(() => { if (msg) { msg.textContent = ''; } }, 4000);
+}
+
+// ── Security & web access ─────────────────────────────────────────────────
+async function loadSecurity() {
+  try {
+    const r = await fetch('/api/settings/security');
+    const d = await r.json();
+    const userEl = document.getElementById('sec_username');
+    if (userEl && document.activeElement !== userEl) userEl.value = d.username || '';
+    const cb   = document.getElementById('web_access');
+    const row  = document.getElementById('webaccess-row');
+    const hint = document.getElementById('webaccess-hint');
+    if (cb) {
+      cb.checked  = !!d.web_access;
+      cb.disabled = !d.creds_changed;
+      if (row) row.style.opacity = d.creds_changed ? '1' : '0.5';
+      if (hint) {
+        if (!d.creds_changed)              hint.textContent = 'Disabled until you change the default credentials.';
+        else if (!d.cloudflared_installed) hint.textContent = 'cloudflared is not installed on the Pi — install it to enable web access.';
+        else                               hint.textContent = 'When on, a temporary Cloudflare tunnel exposes this dashboard at the URL below.';
+      }
+    }
+    _renderTunnel(d);
+  } catch(e) { console.error('Failed to load security', e); }
+}
+
+function _renderTunnel(d) {
+  const box = document.getElementById('tunnel-box');
+  const a   = document.getElementById('tunnel-url');
+  if (!box || !a) return;
+  if (d.web_access && d.tunnel_url) {
+    box.style.display = '';
+    a.href = d.tunnel_url; a.textContent = d.tunnel_url;
+  } else if (d.web_access && d.tunnel_running) {
+    box.style.display = '';
+    a.removeAttribute('href'); a.textContent = 'Starting tunnel… reload in a few seconds';
+  } else {
+    box.style.display = 'none';
+  }
+}
+
+async function saveUsername() {
+  const u = document.getElementById('sec_username').value.trim();
+  if (!u) { _setMsg('sec-msg', 'User Name cannot be empty', false); return; }
+  try {
+    const r = await fetch('/api/settings/security/username', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({username: u})
+    });
+    const d = await r.json();
+    if (d.ok) { _setMsg('sec-msg', '✓ User Name updated', true); loadSecurity(); }
+    else      { _setMsg('sec-msg', d.error || 'Failed', false); }
+  } catch(e) { _setMsg('sec-msg', 'Request failed', false); }
+}
+
+function openPwModal() {
+  document.getElementById('pw_new').value  = '';
+  document.getElementById('pw_new2').value = '';
+  const m = document.getElementById('pw-msg');
+  if (m) { m.textContent = ''; m.className = 'settings-msg'; }
+  document.getElementById('pw-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('pw_new').focus(), 50);
+}
+
+function closePwModal() {
+  document.getElementById('pw-modal').style.display = 'none';
+}
+
+async function savePassword() {
+  const p  = document.getElementById('pw_new').value;
+  const p2 = document.getElementById('pw_new2').value;
+  if (p !== p2)     { _setMsg('pw-msg', 'Passwords do not match', false); return; }
+  if (p.length < 8) { _setMsg('pw-msg', 'Password must be at least 8 characters', false); return; }
+  try {
+    const r = await fetch('/api/settings/security/password', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({new_password: p})
+    });
+    const d = await r.json();
+    if (d.ok) {
+      closePwModal();
+      _setMsg('sec-msg', '✓ Password updated', true);
+      loadSecurity();
+    } else {
+      _setMsg('pw-msg', d.error || 'Failed', false);
+    }
+  } catch(e) { _setMsg('pw-msg', 'Request failed', false); }
+}
+
+async function toggleWebAccess() {
+  const cb = document.getElementById('web_access');
+  const enabled = cb.checked;
+  cb.disabled = true;
+  try {
+    const r = await fetch('/api/settings/web-access', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({enabled})
+    });
+    const d = await r.json();
+    if (!d.ok) {
+      cb.checked = !enabled;
+      _setMsg('sec-msg', d.error || 'Failed', false);
+    } else {
+      _renderTunnel(d);
+      if (enabled && !d.tunnel_url) { setTimeout(loadSecurity, 2500); setTimeout(loadSecurity, 6000); }
+    }
+  } catch(e) {
+    cb.checked = !enabled;
+    _setMsg('sec-msg', 'Request failed', false);
+  } finally {
+    cb.disabled = false;
+  }
 }
 
 // ── Notification settings ─────────────────────────────────────────────────
@@ -1724,6 +1940,7 @@ _STAT_CARDS     = _slice_between(TEMPLATE, "<!-- Stat cards -->",               
 _PUMP_WIDGET    = _slice_between(TEMPLATE, "<!-- Pump run history -->",                     "<!-- /pump widget -->")
 _RSSI_WIDGET    = _slice_between(TEMPLATE, "<!-- RSSI chart -->",                           "<!-- /rssi widget -->")
 _UNKNOWN_WIDGET = _slice_between(TEMPLATE, "<!-- Unhandled requests (collapsed by default) -->", "<!-- /unknown widget -->")
+_DEBUG_ACTIONS  = _slice_between(TEMPLATE, "<!-- Debug actions -->",                        "<!-- /debug actions -->")
 _SETTINGS_INNER = _slice_between(TEMPLATE, '<div class="settings-grid">',                   "</div><!-- /settings grid -->")
 
 MOBILE_TEMPLATE = """<!DOCTYPE html>
@@ -1941,7 +2158,7 @@ MOBILE_TEMPLATE = """<!DOCTYPE html>
 <div id="tab-settings" class="tab-panel">
 """ + _SETTINGS_INNER + """</div>
 <div class="grid" style="padding-top:0"><div class="section-title" style="margin-bottom:0">Debug</div></div>
-""" + _UNKNOWN_WIDGET + """
+""" + _DEBUG_ACTIONS + _UNKNOWN_WIDGET + """
 </div><!-- end tab-settings -->
 
 <a class="desktop-link" href="/?desktop=1">View desktop site →</a>
@@ -2223,6 +2440,279 @@ def api_settings_test():
     ok, msg = send_test(channel)
     return jsonify({"ok": ok, "error": msg if not ok else None})
 
+@app.route("/api/debug/log")
+def api_debug_log():
+    """Export recent service logs as a downloadable text file for troubleshooting."""
+    units = ["pumpsleeper", "pumpsleeper-dashboard"]
+    cmd = ["journalctl"]
+    for u in units:
+        cmd += ["-u", u]
+    cmd += ["-n", "2000", "--no-pager", "-o", "short-iso"]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        body = proc.stdout or ""
+        if not body.strip():
+            body = ("(journalctl returned no entries. The dashboard service user may not "
+                    "have permission to read the system journal — add it to the "
+                    "'systemd-journal' group to enable full logs.)\n\nstderr:\n"
+                    + (proc.stderr or ""))
+    except FileNotFoundError:
+        body = "journalctl is not available on this host."
+    except subprocess.TimeoutExpired:
+        body = "Timed out while collecting logs."
+    except Exception as exc:
+        body = f"Failed to collect logs: {exc}"
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    fname = f"pumpsleeper-log-{stamp}.txt"
+    head  = ("PumpSleeper service log export\n"
+             f"Generated: {stamp}\n"
+             f"Units: {', '.join(units)} (last 2000 lines)\n"
+             + "=" * 60 + "\n\n")
+    resp = make_response(head + body)
+    resp.headers["Content-Type"] = "text/plain; charset=utf-8"
+    resp.headers["Content-Disposition"] = f'attachment; filename="{fname}"'
+    return resp
+
+# ---------------------------------------------------------------------------
+# Cloudflare quick-tunnel management
+# ---------------------------------------------------------------------------
+_tunnel_proc = None
+_tunnel_url  = None
+_tunnel_lock = threading.Lock()
+_TUNNEL_URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
+
+def _tunnel_running() -> bool:
+    return _tunnel_proc is not None and _tunnel_proc.poll() is None
+
+def _read_tunnel_output(proc):
+    """Scrape the generated trycloudflare.com URL from cloudflared's output and
+    notify (email/ntfy) whenever it changes — the quick-tunnel URL is new on
+    every restart, so this is how you learn the current address."""
+    global _tunnel_url
+    last_notified = None
+    try:
+        for line in proc.stdout:
+            m = _TUNNEL_URL_RE.search(line)
+            if m:
+                url = m.group(0)
+                _tunnel_url = url
+                if url != last_notified:
+                    last_notified = url
+                    try:
+                        from notifications import notify, EVENT_WEBACCESS_URL
+                        notify(EVENT_WEBACCESS_URL,
+                               f"Your PumpSleeper dashboard is now reachable at:\n{url}")
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+def start_tunnel():
+    """Spawn the cloudflared quick tunnel.
+
+    Returns (ok, error). ok=False with error=='not installed' means cloudflared
+    is missing; otherwise error carries the exception text.
+    """
+    global _tunnel_proc, _tunnel_url
+    with _tunnel_lock:
+        if _tunnel_running():
+            return True, None
+        cf = shutil.which("cloudflared")
+        if not cf:
+            return False, "not installed"
+        _tunnel_url = None
+        try:
+            _tunnel_proc = subprocess.Popen(
+                [cf, "tunnel", "--no-autoupdate", "--url", f"http://localhost:{DASH_PORT}"],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+            )
+        except Exception as exc:
+            _tunnel_proc = None
+            return False, str(exc)
+        threading.Thread(target=_read_tunnel_output, args=(_tunnel_proc,), daemon=True).start()
+        return True, None
+
+def stop_tunnel():
+    global _tunnel_proc, _tunnel_url
+    with _tunnel_lock:
+        if _tunnel_proc is not None:
+            try:
+                _tunnel_proc.terminate()
+                try:
+                    _tunnel_proc.wait(timeout=5)
+                except Exception:
+                    _tunnel_proc.kill()
+            except Exception:
+                pass
+        _tunnel_proc = None
+        _tunnel_url = None
+
+def _wait_for_tunnel_url(timeout=12.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _tunnel_url:
+            return _tunnel_url
+        time.sleep(0.25)
+    return _tunnel_url
+
+
+# ---------------------------------------------------------------------------
+# Login / logout
+# ---------------------------------------------------------------------------
+_login_attempts = {}          # ip -> [fail_count, locked_until_epoch]
+LOGIN_MAX_TRIES = 5
+LOGIN_LOCK_SECS = 300
+
+LOGIN_TEMPLATE = """<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PumpSleeper — Sign in</title>
+<style>
+  :root { --bg:#0f1117; --card:#1a1d27; --border:#2a2d3a; --text:#e2e8f0;
+          --muted:#8892a4; --blue:#3b82f6; --red:#ef4444; --yellow:#f59e0b; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif;
+         min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+  .login-card { background:var(--card); border:1px solid var(--border); border-radius:14px;
+                padding:32px 28px; width:100%; max-width:360px; }
+  h1 { font-size:22px; font-weight:600; letter-spacing:0.5px; margin-bottom:4px; }
+  h1 span { color:var(--blue); }
+  .sub { font-size:13px; color:var(--muted); margin-bottom:22px; }
+  label { display:block; font-size:12px; color:var(--muted); margin:14px 0 5px; }
+  input { width:100%; background:var(--bg); border:1px solid var(--border); border-radius:8px;
+          color:var(--text); font-size:16px; padding:11px 12px; outline:none; }
+  input:focus { border-color:var(--blue); }
+  button { width:100%; margin-top:22px; padding:12px; border:none; border-radius:8px;
+           background:var(--blue); color:#fff; font-size:15px; font-weight:600; cursor:pointer; }
+  .err { margin-top:16px; font-size:13px; color:var(--red); }
+  .warn { margin-top:16px; font-size:12px; color:var(--yellow); line-height:1.5; }
+</style>
+</head>
+<body>
+  <form class="login-card" method="POST">
+    <h1>Pump<span>Sleeper</span></h1>
+    <div class="sub">Sign in to continue</div>
+    <label for="username">Username</label>
+    <input id="username" name="username" autocomplete="username" autofocus>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password">
+    <button type="submit">Sign in</button>
+    {% if error %}<div class="err">{{ error }}</div>{% endif %}
+    {% if default_warn %}<div class="warn">&#9888; Still using the default <strong>admin / admin</strong> login. Change it in Settings &rarr; Security after signing in.</div>{% endif %}
+  </form>
+</body>
+</html>"""
+
+def _client_ip():
+    fwd = request.headers.get("X-Forwarded-For", "")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.remote_addr or "?"
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    from db import verify_password, is_default_credentials
+    error = None
+    ip  = _client_ip()
+    now = time.time()
+    rec = _login_attempts.get(ip)
+    locked = bool(rec and rec[1] > now)
+    if request.method == "POST":
+        if locked:
+            error = "Too many failed attempts. Try again in a few minutes."
+        else:
+            u = request.form.get("username", "")
+            p = request.form.get("password", "")
+            if verify_password(u, p):
+                session.clear()
+                session["authed"] = True
+                session["user"]   = u
+                _login_attempts.pop(ip, None)
+                nxt = request.args.get("next") or "/"
+                if not nxt.startswith("/"):
+                    nxt = "/"
+                return redirect(nxt)
+            cnt = (rec[0] if rec else 0) + 1
+            lock_until = now + LOGIN_LOCK_SECS if cnt >= LOGIN_MAX_TRIES else 0
+            _login_attempts[ip] = [cnt, lock_until]
+            error = "Invalid username or password."
+    elif locked:
+        error = "Too many failed attempts. Try again in a few minutes."
+    return render_template_string(LOGIN_TEMPLATE, error=error,
+                                  default_warn=is_default_credentials())
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
+# ---------------------------------------------------------------------------
+# Security settings + web access (Cloudflare quick tunnel)
+# ---------------------------------------------------------------------------
+@app.route("/api/settings/security", methods=["GET"])
+def api_security_get():
+    from db import get_auth_username, is_default_credentials, get_web_access
+    return jsonify({
+        "username": get_auth_username(),
+        "creds_changed": not is_default_credentials(),
+        "web_access": get_web_access(),
+        "tunnel_running": _tunnel_running(),
+        "tunnel_url": _tunnel_url,
+        "cloudflared_installed": shutil.which("cloudflared") is not None,
+    })
+
+@app.route("/api/settings/security/username", methods=["POST"])
+def api_security_username():
+    from db import set_username
+    data = request.get_json(force=True, silent=True) or {}
+    new_user = (data.get("username") or "").strip()
+    try:
+        set_username(new_user)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    session["user"] = new_user
+    return jsonify({"ok": True})
+
+@app.route("/api/settings/security/password", methods=["POST"])
+def api_security_password():
+    from db import set_password
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        set_password(data.get("new_password") or "")
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    session["authed"] = True
+    return jsonify({"ok": True})
+
+@app.route("/api/settings/web-access", methods=["POST"])
+def api_web_access():
+    from db import is_default_credentials, set_web_access
+    data = request.get_json(force=True, silent=True) or {}
+    enabled = bool(data.get("enabled"))
+    if enabled:
+        if is_default_credentials():
+            return jsonify({"ok": False,
+                            "error": "Change the default username and password first."}), 400
+        ok, err = start_tunnel()
+        if not ok:
+            if err == "not installed":
+                return jsonify({"ok": False,
+                                "error": "cloudflared is not installed on the Pi. Install it, then try again."}), 400
+            return jsonify({"ok": False, "error": f"Failed to start tunnel: {err}"}), 500
+        set_web_access(True)
+        _wait_for_tunnel_url(timeout=12)
+        return jsonify({"ok": True, "web_access": True,
+                        "tunnel_running": _tunnel_running(), "tunnel_url": _tunnel_url})
+    stop_tunnel()
+    set_web_access(False)
+    return jsonify({"ok": True, "web_access": False,
+                    "tunnel_running": False, "tunnel_url": None})
+
+
 @app.route("/")
 def index():
     from db import get_ui_theme
@@ -2259,4 +2749,11 @@ def api_data():
 
 if __name__ == "__main__":
     init_db()
-    app.run(host="0.0.0.0", port=8080, debug=False)
+    # If web access was left enabled, bring the tunnel back up (new URL each time).
+    try:
+        from db import get_web_access
+        if get_web_access():
+            start_tunnel()
+    except Exception:
+        pass
+    app.run(host="0.0.0.0", port=DASH_PORT, debug=False)
