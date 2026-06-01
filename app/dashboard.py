@@ -9,7 +9,7 @@ import subprocess
 import threading
 import requests as rlib
 from datetime import datetime, timezone, timedelta
-from flask import Flask, jsonify, request, render_template_string
+from flask import Flask, jsonify, request, render_template_string, make_response
 from db import load_events, init_db, get_mode_switched_ts, get_device_ip, get_hotspot_connected
 
 SERVER_URL    = os.environ.get("PUMPSPY_SERVER_URL", "http://127.0.0.1:8081")
@@ -1464,6 +1464,262 @@ async function sendTest(channel) {
 </html>"""
 
 # ---------------------------------------------------------------------------
+# Mobile layout — a separate, phone-optimised design that REUSES the desktop
+# JavaScript and the functional widget markup verbatim, so behaviour can never
+# drift between the two. Only the page chrome (header / nav) and CSS differ.
+# ---------------------------------------------------------------------------
+import re as _re
+
+
+def _slice_between(text: str, start: str, end: str) -> str:
+    """Return the substring of `text` from `start` up to (not including) `end`."""
+    i = text.index(start)
+    j = text.index(end, i)
+    return text[i:j]
+
+
+# The inline <script> block (everything except the Chart.js CDN <script src=…>).
+_script_match = _re.search(r"<script>\n(.*)\n</script>\n</body>\n</html>", TEMPLATE, _re.S)
+SHARED_SCRIPT = _script_match.group(1) if _script_match else ""
+
+# Functional fragments lifted straight from the desktop template.
+_AUTH_BANNER    = _slice_between(TEMPLATE, "<!-- Auth failure banner -->",                 "<!-- Stat cards -->")
+_STAT_CARDS     = _slice_between(TEMPLATE, "<!-- Stat cards -->",                           "<!-- Pump run history -->")
+_PUMP_WIDGET    = _slice_between(TEMPLATE, "<!-- Pump run history -->",                     "<!-- RSSI chart -->")
+_RSSI_WIDGET    = _slice_between(TEMPLATE, "<!-- RSSI chart -->",                           "<!-- Unhandled requests (collapsed by default) -->")
+_UNKNOWN_WIDGET = _slice_between(TEMPLATE, "<!-- Unhandled requests (collapsed by default) -->", "</div><!-- end tab-dashboard -->")
+_SETTINGS_INNER = _slice_between(TEMPLATE, '<div class="settings-grid">',                   "</div><!-- end tab-settings -->")
+
+MOBILE_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1117">
+<title>PumpSleeper</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1117; --card: #1a1d27; --border: #2a2d3a;
+    --text: #e2e8f0; --muted: #8892a4; --green: #22c55e;
+    --red: #ef4444; --yellow: #f59e0b; --blue: #3b82f6; --purple: #a855f7;
+    --nav-h: 60px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif;
+         font-size: 15px; padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom)); }
+
+  /* ── Sticky top bar ─────────────────────────────────────────── */
+  header { position: sticky; top: 0; z-index: 20; background: rgba(15,17,23,0.92);
+           backdrop-filter: blur(8px); border-bottom: 1px solid var(--border);
+           padding: 12px 16px calc(12px + env(safe-area-inset-top)); }
+  .topline { display: flex; align-items: center; justify-content: space-between; }
+  header h1 { font-size: 18px; font-weight: 600; letter-spacing: 0.5px; }
+  header h1 span { color: var(--blue); }
+  #refresh-info { font-size: 11px; color: var(--muted); }
+  .mode-toggle { display: flex; gap: 8px; margin-top: 10px; }
+  .mode-btn { flex: 1; padding: 9px 0; border-radius: 8px; border: 1px solid var(--border);
+              font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+  .mode-btn.active-proxy    { background: rgba(34,197,94,0.15);  color: var(--green); border-color: var(--green); }
+  .mode-btn.active-takeover { background: rgba(239,68,68,0.15);  color: var(--red);   border-color: var(--red); }
+  .mode-btn.inactive { background: transparent; color: var(--muted); }
+
+  /* ── Generic cards / layout ─────────────────────────────────── */
+  .grid { display: grid; gap: 12px; padding: 14px 14px 0; }
+  .stats { grid-template-columns: 1fr 1fr; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; }
+  .stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.7px; color: var(--muted); margin-bottom: 6px; }
+  .stat-value { font-size: 24px; font-weight: 700; line-height: 1.15; }
+  .stat-sub { font-size: 11px; color: var(--muted); margin-top: 4px; word-break: break-word; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+  .dot.online { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .dot.offline { background: var(--red); }
+  .dot.pending { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+  .section-title { font-size: 13px; font-weight: 600; color: var(--muted);
+                   text-transform: uppercase; letter-spacing: 0.6px; }
+  .chart-wrap { position: relative; height: 200px; }
+
+  /* The "Cycle Hotspot" button — make it a comfortable tap target. */
+  .cycle-btn { font-size: 13px; color: var(--muted); background: transparent;
+               border: 1px solid var(--border); border-radius: 8px; padding: 9px 14px;
+               cursor: pointer; width: 100%; }
+  .cycle-btn:disabled { opacity: 0.4; }
+  .cycle-progress { font-size: 12px; color: var(--yellow); }
+  .cycle-done  { font-size: 12px; color: var(--green); }
+  .cycle-error { font-size: 12px; color: var(--red); }
+
+  /* ── Badges ─────────────────────────────────────────────────── */
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 5px; font-size: 11px; font-weight: 600; }
+  .badge.running  { background: rgba(34,197,94,0.15);  color: var(--green); }
+  .badge.stopped  { background: rgba(59,130,246,0.15);  color: var(--blue); }
+  .badge.fault    { background: rgba(239,68,68,0.15);   color: var(--red); }
+  .badge.cleared  { background: rgba(34,197,94,0.15);   color: var(--green); }
+  .badge.unknown  { background: rgba(168,85,247,0.15);  color: var(--purple); }
+  .badge.main     { background: rgba(59,130,246,0.12);  color: var(--blue); }
+  .badge.backup   { background: rgba(245,158,11,0.15);  color: var(--yellow); }
+  .empty { color: var(--muted); font-style: italic; padding: 14px 4px; text-align: center; }
+
+  /* ── Collapsible widgets ────────────────────────────────────── */
+  .widget-header { display:flex; align-items:center; justify-content:space-between;
+                   cursor:pointer; user-select:none; margin-bottom:12px; }
+  .collapse-btn { font-size:13px; color:var(--muted); padding:4px 8px;
+                  border:1px solid var(--border); border-radius:6px;
+                  background:transparent; transition:transform 0.2s; }
+  .collapsible-content { overflow:hidden; }
+  .collapsed .collapsible-content { display:none; }
+  .collapsed .collapse-btn { transform:rotate(-90deg); }
+
+  /* ── Auth banner ────────────────────────────────────────────── */
+  .auth-banner { display:none; flex-direction:column; gap:10px; margin:14px 14px 0;
+                 padding:12px 14px; background:rgba(245,158,11,0.12);
+                 border:1px solid rgba(245,158,11,0.4); border-radius:12px; font-size:13px; }
+  .auth-banner.visible { display:flex; }
+  .auth-banner-msg { color: var(--yellow); }
+  .auth-banner-msg strong { font-weight:700; }
+  .auth-takeover-btn { padding:10px; border-radius:8px; border:1px solid var(--red);
+                       background:rgba(239,68,68,0.15); color:var(--red);
+                       font-size:13px; font-weight:700; cursor:pointer; width:100%; }
+
+  /* ── Filter bar ─────────────────────────────────────────────── */
+  .filter-bar { display:grid; grid-template-columns:auto 1fr; align-items:center; gap:8px 10px; margin-bottom:14px; }
+  .filter-bar label { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px; }
+  .filter-input { background:var(--bg); border:1px solid var(--border); border-radius:8px;
+                  color:var(--text); font-size:16px; padding:9px 10px; outline:none; width:100%; }
+  .filter-input:focus { border-color:var(--blue); }
+  .filter-input option { background:var(--card); }
+  .filter-clear { grid-column:1 / -1; font-size:13px; color:var(--muted); cursor:pointer; padding:9px;
+                  border:1px solid var(--border); border-radius:8px; background:transparent; }
+  .filter-count { grid-column:1 / -1; font-size:11px; color:var(--muted); text-align:right; }
+
+  /* ── Pump run history → stacked cards (no wide table on phones) ─ */
+  #pump-table, #pump-table tbody, #pump-table tr, #pump-table td { display:block; width:100%; }
+  #pump-table thead { display:none; }
+  .scroll-table { max-height:none; overflow:visible; }
+  #pump-table tr { border:1px solid var(--border); border-radius:10px; padding:6px 4px; margin-bottom:10px; }
+  #pump-table tr:hover td { background:transparent; }
+  #pump-table td { border:none; display:flex; justify-content:space-between; align-items:center;
+                   gap:12px; padding:6px 10px; font-size:14px; text-align:right; }
+  #pump-table td::before { content:attr(data-label); color:var(--muted); font-size:11px;
+                           text-transform:uppercase; letter-spacing:0.4px; text-align:left; }
+  #pump-table td:nth-of-type(1)::before { content:"Run Date"; }
+  #pump-table td:nth-of-type(2)::before { content:"Pump"; }
+  #pump-table td:nth-of-type(3)::before { content:"State"; }
+  #pump-table td:nth-of-type(4)::before { content:"Duration"; }
+  #pump-table td:nth-of-type(5)::before { content:"Est. Gallons"; }
+  #pump-table td:nth-of-type(6)::before { content:"Current"; }
+  #pump-table td:nth-of-type(7)::before { content:"Batt V"; }
+  #pump-table td:nth-of-type(8)::before { content:"Loaded V"; }
+  #pump-table td.empty { display:block; text-align:center; }
+  #pump-table td.empty::before { content:""; }
+
+  /* ── Unhandled requests: keep a real (scrollable) table ──────── */
+  #widget-unknown .scroll-table { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  #unknown-table { min-width:520px; border-collapse:collapse; font-size:13px; }
+  #unknown-table th { text-align:left; padding:8px 10px; color:var(--muted); font-weight:500;
+                      font-size:11px; text-transform:uppercase; border-bottom:1px solid var(--border); white-space:nowrap; }
+  #unknown-table td { padding:8px 10px; border-bottom:1px solid var(--border); }
+  .body-preview { font-family:monospace; font-size:11px; color:var(--muted);
+                  max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .copy-btn { background:rgba(59,130,246,0.15); color:var(--blue); border:none;
+              border-radius:6px; padding:6px 10px; font-size:12px; cursor:pointer; white-space:nowrap; }
+  .copy-btn.copied { background:rgba(34,197,94,0.15); color:var(--green); }
+  .body-expand td { font-family:monospace; font-size:12px; white-space:pre-wrap; word-break:break-all; }
+
+  /* ── Settings (single column, big touch targets) ────────────── */
+  .settings-grid { display:flex; flex-direction:column; gap:14px; padding:14px; }
+  .settings-grid .full-width { width:100%; }
+  .two-row-grid { display:grid; grid-template-columns:1fr; gap:12px; }
+  .form-row { display:flex; flex-direction:column; gap:5px; }
+  .form-row label { font-size:12px; color:var(--muted); }
+  .form-input { background:var(--bg); border:1px solid var(--border); border-radius:8px;
+                color:var(--text); font-size:16px; padding:10px 12px; outline:none; width:100%; }
+  .form-input:focus { border-color:var(--blue); }
+  .toggle-label { display:flex; align-items:center; gap:10px; cursor:pointer; font-size:14px; padding:4px 0; }
+  .toggle-label input[type=checkbox] { width:20px; height:20px; accent-color:var(--blue); flex:0 0 auto; }
+  .save-btn { padding:12px 22px; border-radius:8px; border:none; background:var(--blue);
+              color:#fff; font-size:15px; font-weight:600; cursor:pointer; width:100%; }
+  .test-btn { padding:10px 14px; border-radius:8px; border:1px solid var(--border);
+              background:transparent; color:var(--muted); font-size:13px; cursor:pointer; }
+  .settings-section { font-size:11px; text-transform:uppercase; letter-spacing:0.8px; color:var(--muted); }
+  .settings-msg { font-size:12px; margin-top:6px; min-height:18px; display:block; }
+  .settings-msg.ok  { color:var(--green); }
+  .settings-msg.err { color:var(--red); }
+
+  /* ── Tab panels + bottom nav ────────────────────────────────── */
+  .tab-panel { display:none; }
+  .tab-panel.active { display:block; padding-bottom:18px; }
+  .bottom-nav { position:fixed; bottom:0; left:0; right:0; z-index:30; display:flex;
+                height:var(--nav-h); padding-bottom:env(safe-area-inset-bottom);
+                background:rgba(15,17,23,0.96); backdrop-filter:blur(8px);
+                border-top:1px solid var(--border); }
+  .tab-btn { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
+             gap:3px; background:transparent; border:none; color:var(--muted);
+             font-size:12px; font-weight:500; cursor:pointer; }
+  .tab-btn .nav-icon { font-size:19px; line-height:1; }
+  .tab-btn.active { color:var(--blue); }
+
+  .desktop-link { display:block; text-align:center; color:var(--muted); font-size:12px;
+                  padding:16px; text-decoration:none; }
+  .desktop-link:active { color:var(--text); }
+</style>
+</head>
+<body class="mobile">
+<header>
+  <div class="topline">
+    <h1>Pump<span>Sleeper</span></h1>
+    <span id="refresh-info">Loading…</span>
+  </div>
+  <div class="mode-toggle">
+    <button class="mode-btn inactive" id="btn-proxy"    onclick="setMode('proxy')">Proxy</button>
+    <button class="mode-btn inactive" id="btn-takeover" onclick="setMode('takeover')">Takeover</button>
+  </div>
+</header>
+
+<div id="tab-dashboard" class="tab-panel active">
+""" + _AUTH_BANNER + _STAT_CARDS + _PUMP_WIDGET + _RSSI_WIDGET + _UNKNOWN_WIDGET + """
+</div><!-- end tab-dashboard -->
+
+<div id="tab-settings" class="tab-panel">
+<div class="settings-grid">
+""" + _SETTINGS_INNER + """</div>
+</div><!-- end tab-settings -->
+
+<a class="desktop-link" href="/?desktop=1">View desktop site →</a>
+
+<nav class="bottom-nav">
+  <button class="tab-btn active" onclick="showTab('dashboard')"><span class="nav-icon">▦</span>Dashboard</button>
+  <button class="tab-btn" onclick="showTab('settings')"><span class="nav-icon">⚙</span>Settings</button>
+</nav>
+
+<script>
+""" + SHARED_SCRIPT + """
+</script>
+</body>
+</html>"""
+
+
+# Phones (not tablets) get the mobile layout by default.
+_MOBILE_UA_RE = _re.compile(
+    r"iPhone|iPod|Android.*Mobile|Windows Phone|IEMobile|BlackBerry|BB10|Opera Mini|Mobi",
+    _re.IGNORECASE,
+)
+
+
+def _wants_mobile(req) -> bool:
+    """Decide whether to serve the mobile layout for this request."""
+    forced = req.args.get("desktop")
+    if forced == "1":
+        return False          # explicit desktop override
+    if forced == "0":
+        return True           # explicit mobile override
+    cookie = req.cookies.get("view")
+    if cookie in ("mobile", "desktop"):
+        return cookie == "mobile"
+    return bool(_MOBILE_UA_RE.search(req.headers.get("User-Agent", "")))
+
+
+# ---------------------------------------------------------------------------
 # Hotspot cycle — runs nmcli in a background thread, UI polls for status
 # ---------------------------------------------------------------------------
 _cycle_lock = threading.Lock()
@@ -1692,7 +1948,14 @@ def api_settings_test():
 
 @app.route("/")
 def index():
-    return render_template_string(TEMPLATE)
+    mobile = _wants_mobile(request)
+    resp = make_response(render_template_string(MOBILE_TEMPLATE if mobile else TEMPLATE))
+    # Remember an explicit override so manual reloads keep the chosen layout.
+    forced = request.args.get("desktop")
+    if forced in ("0", "1"):
+        resp.set_cookie("view", "mobile" if forced == "0" else "desktop",
+                        max_age=60 * 60 * 24 * 365, samesite="Lax")
+    return resp
 
 @app.route("/api/data")
 def api_data():
