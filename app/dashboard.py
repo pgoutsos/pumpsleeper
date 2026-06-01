@@ -508,6 +508,16 @@ TEMPLATE = """<!DOCTYPE html>
   .tab-btn.active { color:var(--blue); border-bottom-color:var(--blue); }
   .tab-panel { display:none; }
   .tab-panel.active { display:block; }
+  /* Sub-tabs within the Dashboard page (underline style) */
+  .subtab-nav { display:flex; gap:22px; padding:14px 24px 0; margin-bottom:-1px;
+                border-bottom:1px solid var(--border); }
+  .subtab-btn { padding:8px 2px; font-size:13px; font-weight:500; color:var(--muted);
+                background:transparent; border:none; border-bottom:2px solid transparent;
+                cursor:pointer; transition:color 0.15s; margin-bottom:-1px; }
+  .subtab-btn:hover { color:var(--text); }
+  .subtab-btn.active { color:var(--blue); border-bottom-color:var(--blue); }
+  .subtab-panel { display:none; }
+  .subtab-panel.active { display:block; }
   /* Settings page */
   .settings-grid { display:grid; gap:16px; padding:20px 24px;
                    grid-template-columns: repeat(2, 1fr); }
@@ -563,45 +573,79 @@ TEMPLATE = """<!DOCTYPE html>
   </span>
   <button class="auth-takeover-btn" onclick="setMode('takeover')">Switch to Takeover</button>
 </div>
+<!-- /auth banner -->
 
 <!-- Stat cards -->
-<div class="grid stats" id="stat-cards">
-  <div class="card">
-    <div class="stat-label" id="s-link-label">Cloud Link</div>
-    <div class="stat-value" id="s-online">—</div>
-    <div class="stat-sub" id="s-device-ip" style="font-family:monospace;letter-spacing:0.3px"></div>
-    <div class="stat-sub" id="s-last-ping">—</div>
-    <div style="margin-top:10px">
+<div class="grid" id="stat-cards" style="display:flex;flex-wrap:wrap;align-items:stretch">
+
+  <!-- Hero: pump activity (runs + total gallons + operating status + device health footer) -->
+  <div class="card" id="pump-card" style="flex:1.6 1 320px;display:flex;flex-direction:column">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+      <div class="stat-label" style="margin-bottom:0">Pump Activity · Today</div>
+      <span id="op-pill" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;padding:4px 10px;border-radius:6px;background:rgba(136,146,164,0.15);color:var(--muted)">
+        <span id="op-dot" style="width:7px;height:7px;border-radius:50%;background:var(--muted)"></span>
+        <span id="op-pill-text">—</span>
+      </span>
+    </div>
+    <div style="flex:1;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;min-height:130px">
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:14px;display:flex;flex-direction:column;justify-content:center;gap:8px">
+        <div class="stat-label" style="margin-bottom:0">Main Runs</div>
+        <div id="s-main-runs" style="font-size:40px;font-weight:700;line-height:1">—</div>
+        <div class="stat-sub" id="s-main-runtime" style="margin-top:0;line-height:1.5">—</div>
+      </div>
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:14px;display:flex;flex-direction:column;justify-content:center;gap:8px">
+        <div class="stat-label" style="margin-bottom:0">Backup Runs</div>
+        <div id="s-backup-runs" style="font-size:40px;font-weight:700;line-height:1">—</div>
+        <div class="stat-sub" id="s-backup-runtime" style="margin-top:0;line-height:1.5">—</div>
+      </div>
+      <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:14px;display:flex;flex-direction:column;justify-content:center;gap:8px">
+        <div class="stat-label" style="margin-bottom:0">Total Today</div>
+        <div style="line-height:1"><span id="s-total-gallons" style="font-size:40px;font-weight:700">—</span> <span style="font-size:16px;color:var(--muted);font-weight:600">gal</span></div>
+        <div class="stat-sub" id="s-total-gallons-sub" style="margin-top:0;line-height:1.5">—</div>
+      </div>
+    </div>
+    <!-- Device health footer (de-emphasised) -->
+    <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border);display:flex;align-items:center;gap:22px;flex-wrap:wrap">
+      <span style="font-size:11px;text-transform:uppercase;letter-spacing:0.6px;color:var(--muted)">Device Health</span>
+      <span style="font-size:13px;color:var(--muted)">Signal <strong id="s-rssi" style="color:var(--text);font-weight:600">—</strong> <span style="color:var(--muted)">dBm</span></span>
+      <span style="font-size:13px;color:var(--muted)">Backup Battery <strong id="s-battery" style="color:var(--text);font-weight:600">—</strong> <span style="color:var(--muted)">V</span> <span id="s-battery-sub" style="color:var(--muted)"></span></span>
+    </div>
+  </div>
+
+  <!-- Cloud link / connectivity (stretches to match the hero card height) -->
+  <div class="card" style="flex:1 1 240px;display:flex;flex-direction:column">
+    <div class="stat-label">PumpSpy Device</div>
+    <div class="stat-value" id="s-online" style="margin-bottom:14px">—</div>
+    <div style="font-size:13px">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--border)">
+        <span style="color:var(--muted)">Routed To</span><span id="s-link-label">—</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--border)">
+        <span style="color:var(--muted)">Device IP</span>
+        <span id="s-device-ip" style="font-family:monospace;letter-spacing:0.3px">—</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--border)">
+        <span style="color:var(--muted)">Hotspot</span><span id="s-hotspot">—</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline;padding:9px 0">
+        <span style="color:var(--muted)">Last contact</span>
+        <span id="s-last-ping" style="text-align:right">—</span>
+      </div>
+    </div>
+    <div style="margin-top:auto;padding-top:16px">
       <button class="cycle-btn" id="cycle-btn" onclick="cycleHotspot()">↺ Cycle Hotspot</button>
     </div>
     <div id="cycle-status" style="display:none;margin-top:8px"></div>
   </div>
-  <div class="card">
-    <div class="stat-label">Signal (RSSI)</div>
-    <div class="stat-value" id="s-rssi">—</div>
-    <div class="stat-sub">dBm</div>
-  </div>
-  <div class="card">
-    <div class="stat-label">Backup Battery (12V)</div>
-    <div class="stat-value" id="s-battery">—</div>
-    <div class="stat-sub" id="s-battery-sub">—</div>
-  </div>
-  <div class="card">
-    <div class="stat-label">Main Pump Today</div>
-    <div class="stat-value" id="s-main-runs">—</div>
-    <div class="stat-sub" id="s-main-runtime">—</div>
-  </div>
-  <div class="card">
-    <div class="stat-label">Backup Pump Today</div>
-    <div class="stat-value" id="s-backup-runs">—</div>
-    <div class="stat-sub" id="s-backup-runtime">—</div>
-  </div>
-  <div class="card" id="s-op-card">
-    <div class="stat-label">Operating Status</div>
-    <div class="stat-value" id="s-op-status">—</div>
-    <div class="stat-sub" id="s-op-sub">—</div>
-  </div>
 </div>
+<!-- /stat cards -->
+
+<!-- History sub-tabs (within the Dashboard page) -->
+<div class="subtab-nav">
+  <button class="subtab-btn active" onclick="showSubTab('pump')">Pump Run History</button>
+  <button class="subtab-btn" onclick="showSubTab('signal')">Signal Strength</button>
+</div>
+<div id="subtab-pump" class="subtab-panel active">
 
 <!-- Pump run history -->
 <div class="grid" style="grid-template-columns:1fr; padding-top:0">
@@ -623,23 +667,25 @@ TEMPLATE = """<!DOCTYPE html>
         <button class="filter-clear" onclick="clearFilters()">Clear</button>
         <span class="filter-count" id="filter-count"></span>
       </div>
-      <div class="scroll-table"><table id="pump-table">
+      <div class="scroll-table" style="max-height:60vh"><table id="pump-table">
         <thead><tr>
           <th class="sortable" data-col="ts"        onclick="sortPumpTable(this)">Run Date <span class="sort-icon"></span></th>
           <th class="sortable" data-col="pump"      onclick="sortPumpTable(this)">Pump <span class="sort-icon"></span></th>
-          <th class="sortable" data-col="motor"     onclick="sortPumpTable(this)">State <span class="sort-icon"></span></th>
           <th class="sortable" data-col="duration"  onclick="sortPumpTable(this)">Duration <span class="sort-icon"></span></th>
           <th class="sortable" data-col="gallons"   onclick="sortPumpTable(this)">Est. Gallons <span class="sort-icon"></span></th>
-          <th class="sortable" data-col="amps"      onclick="sortPumpTable(this)">Current <span class="sort-icon"></span></th>
-          <th class="sortable" data-col="battery_v" onclick="sortPumpTable(this)">Batt V <span class="sort-icon"></span></th>
-          <th class="sortable" data-col="loaded_v"  onclick="sortPumpTable(this)">Loaded V <span class="sort-icon"></span></th>
+          <th class="sortable col-extra" data-col="amps"      onclick="sortPumpTable(this)">Current <span class="sort-icon"></span></th>
+          <th class="sortable col-extra" data-col="battery_v" onclick="sortPumpTable(this)">Batt V <span class="sort-icon"></span></th>
+          <th class="sortable col-extra" data-col="loaded_v"  onclick="sortPumpTable(this)">Loaded V <span class="sort-icon"></span></th>
         </tr></thead>
         <tbody></tbody>
       </table></div>
     </div>
   </div>
 </div>
+<!-- /pump widget -->
+</div>
 
+<div id="subtab-signal" class="subtab-panel">
 <!-- RSSI chart -->
 <div class="grid" style="grid-template-columns:1fr; padding-top:0">
   <div class="card" id="widget-rssi">
@@ -652,22 +698,9 @@ TEMPLATE = """<!DOCTYPE html>
     </div>
   </div>
 </div>
-
-<!-- Unhandled requests (collapsed by default) -->
-<div class="grid" style="grid-template-columns:1fr; padding-top:0">
-  <div class="card collapsed" id="widget-unknown">
-    <div class="widget-header" onclick="toggleWidget('widget-unknown')">
-      <div class="section-title">Unhandled Requests</div>
-      <span class="collapse-btn">▼</span>
-    </div>
-    <div class="collapsible-content">
-      <div class="scroll-table"><table id="unknown-table">
-        <thead><tr><th>Time</th><th>Method</th><th>Path</th><th>Body</th><th></th></tr></thead>
-        <tbody></tbody>
-      </table></div>
-    </div>
-  </div>
+<!-- /rssi widget -->
 </div>
+<!-- /history subtabs -->
 
 </div><!-- end tab-dashboard -->
 
@@ -813,7 +846,30 @@ TEMPLATE = """<!DOCTYPE html>
     <span id="unsaved-msg" style="display:none;font-size:12px;color:var(--yellow)">⚠ Unsaved changes — save before sending a test</span>
   </div>
 
+</div><!-- /settings grid -->
+
+<!-- Debug section -->
+<div class="grid" style="grid-template-columns:1fr; padding-top:0">
+  <div class="section-title" style="margin-bottom:0">Debug</div>
 </div>
+
+<!-- Unhandled requests (collapsed by default) -->
+<div class="grid" style="grid-template-columns:1fr; padding-top:0">
+  <div class="card collapsed" id="widget-unknown">
+    <div class="widget-header" onclick="toggleWidget('widget-unknown')">
+      <div class="section-title">Unhandled Requests</div>
+      <span class="collapse-btn">▼</span>
+    </div>
+    <div class="collapsible-content">
+      <div class="scroll-table"><table id="unknown-table">
+        <thead><tr><th>Time</th><th>Method</th><th>Path</th><th>Body</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table></div>
+    </div>
+  </div>
+</div>
+<!-- /unknown widget -->
+
 </div><!-- end tab-settings -->
 
 <script>
@@ -906,12 +962,11 @@ function renderPumpTable() {
     return '<tr>' +
       '<td>' + fmtTs(r.ts) + '</td>' +
       '<td><span class="badge ' + (r.pump || 'main') + '">' + (r.pump || 'main').toUpperCase() + '</span>' + triggerLabel + '</td>' +
-      '<td><span class="badge ' + r.motor.toLowerCase() + '">' + r.motor + '</span></td>' +
       '<td>' + dur + '</td>' +
       '<td>' + gallons + '</td>' +
-      '<td>' + amps + '</td>' +
-      '<td>' + battV + '</td>' +
-      '<td>' + loadedV + '</td>' +
+      '<td class="col-extra">' + amps + '</td>' +
+      '<td class="col-extra">' + battV + '</td>' +
+      '<td class="col-extra">' + loadedV + '</td>' +
       '</tr>';
   }));
 }
@@ -976,9 +1031,9 @@ function setTbody(tableId, rows) {
 }
 
 function update(d) {
-  // Dynamic link label based on mode
+  // Where the PumpSpy device's traffic is currently routed
   document.getElementById('s-link-label').textContent =
-    d.mode === 'takeover' ? 'Local Link' : 'Cloud Link';
+    d.mode === 'takeover' ? 'Local' : 'PumpSpy Servers';
 
   // Device link status card
   _linkStatus     = d.link_status || (d.online ? 'online' : 'offline');
@@ -991,16 +1046,17 @@ function update(d) {
                     : 'Offline';
   onEl.innerHTML = '<span class="dot ' + _linkStatus + '"></span>' + statusLabel;
 
-  // Device IP + WiFi badge
-  const ipEl = document.getElementById('s-device-ip');
-  if (d.device_ip) {
-    let wifiMark = '';
-    if (d.hotspot_connected === true)       wifiMark = ' &nbsp;<span style="color:var(--green);font-family:sans-serif">WiFi ✓</span>';
-    else if (d.hotspot_connected === false) wifiMark = ' &nbsp;<span style="color:var(--red);font-family:sans-serif">WiFi ✗</span>';
-    ipEl.innerHTML = d.device_ip + wifiMark;
-  } else {
-    ipEl.textContent = '';
+  // Hotspot detail row
+  const hsEl = document.getElementById('s-hotspot');
+  if (hsEl) {
+    if (d.hotspot_connected === true)       { hsEl.textContent = 'Connected';    hsEl.style.color = 'var(--green)'; }
+    else if (d.hotspot_connected === false) { hsEl.textContent = 'Disconnected'; hsEl.style.color = 'var(--red)'; }
+    else                                    { hsEl.textContent = '—';            hsEl.style.color = 'var(--muted)'; }
   }
+
+  // Device IP (hotspot row above carries the WiFi state)
+  const ipEl = document.getElementById('s-device-ip');
+  ipEl.textContent = d.device_ip || '—';
 
   const pingSub = document.getElementById('s-last-ping');
   if (_linkStatus === 'pending') {
@@ -1022,35 +1078,47 @@ function update(d) {
   document.getElementById('s-battery').textContent = backupBatt;
   document.getElementById('s-battery-sub').textContent =
     (d.last_backup_loaded_v !== null && d.last_backup_loaded_v !== undefined)
-      ? 'Loaded: ' + d.last_backup_loaded_v.toFixed(3) + 'V' : '—';
+      ? 'loaded ' + d.last_backup_loaded_v.toFixed(3) + ' V' : '';
+
+  const runDetail = (rt, gal) => rt > 0
+    ? rt + 's runtime<br>' + gal + ' gal pumped'
+    : 'No runs today';
 
   document.getElementById('s-main-runs').textContent = d.main_runs_today;
-  document.getElementById('s-main-runtime').textContent = d.total_main_runtime_today > 0
-    ? d.total_main_runtime_today + 's · ' + d.total_main_gallons_today + ' gal'
-    : 'No runs today';
+  document.getElementById('s-main-runtime').innerHTML =
+    runDetail(d.total_main_runtime_today, d.total_main_gallons_today);
 
   document.getElementById('s-backup-runs').textContent = d.backup_runs_today;
-  document.getElementById('s-backup-runtime').textContent = d.total_backup_runtime_today > 0
-    ? d.total_backup_runtime_today + 's · ' + d.total_backup_gallons_today + ' gal'
-    : 'No runs today';
+  document.getElementById('s-backup-runtime').innerHTML =
+    runDetail(d.total_backup_runtime_today, d.total_backup_gallons_today);
 
-  // Operating status
-  const opCard = document.getElementById('s-op-card');
-  const opEl   = document.getElementById('s-op-status');
-  const opSub  = document.getElementById('s-op-sub');
+  // Total gallons today (main + backup)
+  const mainGal = d.total_main_gallons_today   || 0;
+  const bkupGal = d.total_backup_gallons_today || 0;
+  const totGal  = Math.round((mainGal + bkupGal) * 10) / 10;
+  document.getElementById('s-total-gallons').textContent     = totGal;
+  document.getElementById('s-total-gallons-sub').innerHTML   = mainGal + ' gal main<br>' + bkupGal + ' gal backup';
+
+  // Operating status — consolidated into a pill on the pump card
+  const pill = document.getElementById('op-pill');
+  const dot  = document.getElementById('op-dot');
+  const ptxt = document.getElementById('op-pill-text');
   if (!d.op_status) {
-    opEl.textContent  = 'No data';
-    opSub.textContent = '—';
-    opCard.style.borderColor = '';
+    ptxt.textContent     = 'No runs yet';
+    dot.style.background  = 'var(--muted)';
+    pill.style.background = 'rgba(136,146,164,0.15)';
+    pill.style.color      = 'var(--muted)';
   } else if (d.op_status.pump === 'main') {
-    opEl.innerHTML = '<span style="color:var(--green)">&#x2714; Main Pump</span>';
-    opSub.textContent = 'Last run ' + fmtAgo(d.op_status.ts);
-    opCard.style.borderColor = 'var(--green)';
+    ptxt.textContent     = 'Main pump · ' + fmtAgo(d.op_status.ts);
+    dot.style.background  = 'var(--green)';
+    pill.style.background = 'rgba(34,197,94,0.15)';
+    pill.style.color      = 'var(--green)';
   } else {
-    const trig = d.op_status.trigger ? d.op_status.trigger.replace('_', ' ') : 'backup';
-    opEl.innerHTML = '<span style="color:var(--yellow)">&#x26A0; Backup Pump</span>';
-    opSub.textContent = trig + ' · ' + fmtAgo(d.op_status.ts);
-    opCard.style.borderColor = 'var(--yellow)';
+    const trig = d.op_status.trigger ? d.op_status.trigger.replace('_', ' ') + ' · ' : '';
+    ptxt.textContent     = 'Backup pump · ' + trig + fmtAgo(d.op_status.ts);
+    dot.style.background  = 'var(--yellow)';
+    pill.style.background = 'rgba(245,158,11,0.15)';
+    pill.style.color      = 'var(--yellow)';
   }
 
   // RSSI chart
@@ -1299,6 +1367,17 @@ if (window.matchMedia) {
   } catch(e) {}
 }
 
+// Default the Pump Run History date filter to today (local) on first load.
+(function initDateFilter() {
+  const fd = document.getElementById('filter-date');
+  if (fd && !fd.value) {
+    const d = new Date();
+    fd.value = d.getFullYear() + '-' +
+               String(d.getMonth() + 1).padStart(2, '0') + '-' +
+               String(d.getDate()).padStart(2, '0');
+  }
+})();
+
 refresh();
 fetchMode();
 loadTheme();
@@ -1311,9 +1390,20 @@ function showTab(name) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
   document.querySelectorAll('.tab-btn').forEach(b => {
-    if (b.textContent.trim().toLowerCase() === name) b.classList.add('active');
+    if ((b.getAttribute('onclick') || '').indexOf("'" + name + "'") !== -1) b.classList.add('active');
   });
   if (name === 'settings') { loadSettings(); loadUpdateInfo(); loadTheme(); }
+}
+
+function showSubTab(name) {
+  document.querySelectorAll('.subtab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.subtab-btn').forEach(b => b.classList.remove('active'));
+  const panel = document.getElementById('subtab-' + name);
+  if (panel) panel.classList.add('active');
+  document.querySelectorAll('.subtab-btn').forEach(b => {
+    if ((b.getAttribute('onclick') || '').indexOf("'" + name + "'") !== -1) b.classList.add('active');
+  });
+  if (name === 'signal' && rssiChart) rssiChart.resize();
 }
 
 // ── Notification settings ─────────────────────────────────────────────────
@@ -1629,12 +1719,12 @@ _script_match = _re.search(r"<script>\n(.*)\n</script>\n</body>\n</html>", TEMPL
 SHARED_SCRIPT = _script_match.group(1) if _script_match else ""
 
 # Functional fragments lifted straight from the desktop template.
-_AUTH_BANNER    = _slice_between(TEMPLATE, "<!-- Auth failure banner -->",                 "<!-- Stat cards -->")
-_STAT_CARDS     = _slice_between(TEMPLATE, "<!-- Stat cards -->",                           "<!-- Pump run history -->")
-_PUMP_WIDGET    = _slice_between(TEMPLATE, "<!-- Pump run history -->",                     "<!-- RSSI chart -->")
-_RSSI_WIDGET    = _slice_between(TEMPLATE, "<!-- RSSI chart -->",                           "<!-- Unhandled requests (collapsed by default) -->")
-_UNKNOWN_WIDGET = _slice_between(TEMPLATE, "<!-- Unhandled requests (collapsed by default) -->", "</div><!-- end tab-dashboard -->")
-_SETTINGS_INNER = _slice_between(TEMPLATE, '<div class="settings-grid">',                   "</div><!-- end tab-settings -->")
+_AUTH_BANNER    = _slice_between(TEMPLATE, "<!-- Auth failure banner -->",                 "<!-- /auth banner -->")
+_STAT_CARDS     = _slice_between(TEMPLATE, "<!-- Stat cards -->",                           "<!-- /stat cards -->")
+_PUMP_WIDGET    = _slice_between(TEMPLATE, "<!-- Pump run history -->",                     "<!-- /pump widget -->")
+_RSSI_WIDGET    = _slice_between(TEMPLATE, "<!-- RSSI chart -->",                           "<!-- /rssi widget -->")
+_UNKNOWN_WIDGET = _slice_between(TEMPLATE, "<!-- Unhandled requests (collapsed by default) -->", "<!-- /unknown widget -->")
+_SETTINGS_INNER = _slice_between(TEMPLATE, '<div class="settings-grid">',                   "</div><!-- /settings grid -->")
 
 MOBILE_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -1754,26 +1844,11 @@ MOBILE_TEMPLATE = """<!DOCTYPE html>
                   border:1px solid var(--border); border-radius:8px; background:transparent; }
   .filter-count { grid-column:1 / -1; font-size:11px; color:var(--muted); text-align:right; }
 
-  /* ── Pump run history → stacked cards (no wide table on phones) ─ */
-  #pump-table, #pump-table tbody, #pump-table tr, #pump-table td { display:block; width:100%; }
-  #pump-table thead { display:none; }
-  .scroll-table { max-height:none; overflow:visible; }
-  #pump-table tr { border:1px solid var(--border); border-radius:10px; padding:6px 4px; margin-bottom:10px; }
-  #pump-table tr:hover td { background:transparent; }
-  #pump-table td { border:none; display:flex; justify-content:space-between; align-items:center;
-                   gap:12px; padding:6px 10px; font-size:14px; text-align:right; }
-  #pump-table td::before { content:attr(data-label); color:var(--muted); font-size:11px;
-                           text-transform:uppercase; letter-spacing:0.4px; text-align:left; }
-  #pump-table td:nth-of-type(1)::before { content:"Run Date"; }
-  #pump-table td:nth-of-type(2)::before { content:"Pump"; }
-  #pump-table td:nth-of-type(3)::before { content:"State"; }
-  #pump-table td:nth-of-type(4)::before { content:"Duration"; }
-  #pump-table td:nth-of-type(5)::before { content:"Est. Gallons"; }
-  #pump-table td:nth-of-type(6)::before { content:"Current"; }
-  #pump-table td:nth-of-type(7)::before { content:"Batt V"; }
-  #pump-table td:nth-of-type(8)::before { content:"Loaded V"; }
-  #pump-table td.empty { display:block; text-align:center; }
-  #pump-table td.empty::before { content:""; }
+  /* ── Pump run history → compact real table on phones ─────────── */
+  #widget-pump .scroll-table { overflow:auto; -webkit-overflow-scrolling:touch; }
+  #pump-table { font-size:13px; }
+  #pump-table th, #pump-table td { padding:7px 8px; white-space:nowrap; }
+  .scroll-table { overflow:auto; }
 
   /* ── Unhandled requests: keep a real (scrollable) table ──────── */
   #widget-unknown .scroll-table { overflow-x:auto; -webkit-overflow-scrolling:touch; }
@@ -1811,6 +1886,19 @@ MOBILE_TEMPLATE = """<!DOCTYPE html>
   /* ── Tab panels + bottom nav ────────────────────────────────── */
   .tab-panel { display:none; }
   .tab-panel.active { display:block; padding-bottom:18px; }
+  /* Sub-tabs within the Dashboard page (underline style) */
+  .subtab-nav { display:flex; gap:24px; padding:14px 16px 0; margin-bottom:-1px;
+                border-bottom:1px solid var(--border); }
+  .subtab-btn { padding:8px 2px; font-size:14px; font-weight:600; color:var(--muted);
+                background:transparent; border:none; border-bottom:2px solid transparent;
+                cursor:pointer; margin-bottom:-1px; }
+  .subtab-btn.active { color:var(--blue); border-bottom-color:var(--blue); }
+  .subtab-panel { display:none; }
+  .subtab-panel.active { display:block; }
+  /* Portrait phones: show only Run Date, Pump, Duration, Est. Gallons */
+  @media (orientation: portrait) {
+    #pump-table .col-extra { display:none; }
+  }
   .bottom-nav { position:fixed; bottom:0; left:0; right:0; z-index:30; display:flex;
                 height:var(--nav-h); padding-bottom:env(safe-area-inset-bottom);
                 background:var(--bar-bg); backdrop-filter:blur(8px);
@@ -1839,12 +1927,21 @@ MOBILE_TEMPLATE = """<!DOCTYPE html>
 </header>
 
 <div id="tab-dashboard" class="tab-panel active">
-""" + _AUTH_BANNER + _STAT_CARDS + _PUMP_WIDGET + _RSSI_WIDGET + _UNKNOWN_WIDGET + """
+""" + _AUTH_BANNER + _STAT_CARDS + """
+<div class="subtab-nav">
+  <button class="subtab-btn active" onclick="showSubTab('pump')">Pump Run History</button>
+  <button class="subtab-btn" onclick="showSubTab('signal')">Signal Strength</button>
+</div>
+<div id="subtab-pump" class="subtab-panel active">
+""" + _PUMP_WIDGET + """</div>
+<div id="subtab-signal" class="subtab-panel">
+""" + _RSSI_WIDGET + """</div>
 </div><!-- end tab-dashboard -->
 
 <div id="tab-settings" class="tab-panel">
-<div class="settings-grid">
 """ + _SETTINGS_INNER + """</div>
+<div class="grid" style="padding-top:0"><div class="section-title" style="margin-bottom:0">Debug</div></div>
+""" + _UNKNOWN_WIDGET + """
 </div><!-- end tab-settings -->
 
 <a class="desktop-link" href="/?desktop=1">View desktop site →</a>

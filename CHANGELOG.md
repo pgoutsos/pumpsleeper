@@ -4,6 +4,22 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v2.0] — 2026-06-01
+
+### New
+- Redesigned dashboard header: a consolidated "Pump Activity · Today" card showing main runs, backup runs, and total gallons, with the operating-status indicator folded in as a colored pill and a quiet device-health footer
+- "PumpSpy Device" connection card with clear labeled rows — Routed To, Device IP, Hotspot, Last contact
+- Pump Run History and Signal Strength moved into in-page sub-tabs on the Dashboard, giving Pump Run History the bulk of the screen
+- Pump Run History date filter now defaults to today on load and persists across tabs
+
+### Improved
+- Pump Run History columns reordered (Run Date, Pump, Duration, Est. Gallons, Current, Batt V, Loaded V) and the State column removed
+- On phones, Pump Run History is now a real table: Run Date, Pump, Duration, Est. Gallons in portrait, with the remaining columns shown in landscape
+- Signal strength and backup battery de-emphasized into a secondary device-health readout
+- Unhandled Requests moved to a collapsed Debug section at the bottom of Settings
+
+---
+
 ## [v1.9] — 2026-05-31
 
 ### Fixed
