@@ -324,6 +324,35 @@ def get_secret_key() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Password-reset tokens (single active, time-limited, single-use)
+# ---------------------------------------------------------------------------
+def set_reset_token(token: str, ttl_seconds: int = 1800):
+    """Store a reset token with an absolute expiry, replacing any existing one."""
+    import time
+    _set_setting("reset_token", token)
+    _set_setting("reset_token_expiry", str(int(time.time()) + ttl_seconds))
+
+def verify_reset_token(token: str) -> bool:
+    """True if `token` matches the stored token and hasn't expired."""
+    import time, hmac
+    if not token:
+        return False
+    stored = _get_setting("reset_token", "")
+    try:
+        exp = int(_get_setting("reset_token_expiry", "0"))
+    except (TypeError, ValueError):
+        exp = 0
+    if not stored or time.time() > exp:
+        return False
+    return hmac.compare_digest(stored, token)
+
+def clear_reset_token():
+    """Invalidate the active reset token (call after a successful reset)."""
+    _set_setting("reset_token", "")
+    _set_setting("reset_token_expiry", "0")
+
+
+# ---------------------------------------------------------------------------
 # Write
 # ---------------------------------------------------------------------------
 def record(kind: str, payload: dict) -> str:

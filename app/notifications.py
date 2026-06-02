@@ -11,6 +11,7 @@ Call notify(event, detail) from anywhere — it reads current config each
 time so settings changes take effect immediately without a restart.
 """
 
+import html as _html
 import logging
 import smtplib
 import threading
@@ -109,7 +110,13 @@ def save_settings(data: dict):
 # Sending
 # ---------------------------------------------------------------------------
 
-def _send_email(subject: str, body: str, cfg: dict):
+def _dashboard_link() -> str:
+    """Best URL to reach the dashboard: the public tunnel address if web access
+    is on, otherwise the dashboard's LAN address. May be '' if neither is known."""
+    return _get("tunnel_public_url", "") or _get("dashboard_local_url", "")
+
+
+def _send_email(subject: str, body: str, cfg: dict, link: str = "", link_label: str = "Open Dashboard"):
     host = cfg["email_smtp_host"]
     port = int(cfg["email_smtp_port"] or 587)
     user = cfg["email_smtp_user"]
@@ -125,7 +132,23 @@ def _send_email(subject: str, body: str, cfg: dict):
     msg["Subject"] = subject
     msg["From"]    = frm
     msg["To"]      = to
-    msg.attach(MIMEText(body, "plain"))
+
+    plain = body + (f"\n\n{link_label}: {link}" if link else "")
+    msg.attach(MIMEText(plain, "plain"))
+    if link:
+        body_html = _html.escape(body).replace("\n", "<br>")
+        link_esc  = _html.escape(link, quote=True)
+        label_esc = _html.escape(link_label)
+        html_body = (
+            '<html><body style="font-family:Segoe UI,system-ui,sans-serif;color:#1d2430">'
+            f'<p style="font-size:15px">{body_html}</p>'
+            f'<p><a href="{link_esc}" style="display:inline-block;padding:10px 18px;'
+            'background:#3b82f6;color:#ffffff;text-decoration:none;border-radius:6px;'
+            f'font-weight:600">{label_esc}</a></p>'
+            f'<p style="font-size:12px;color:#888"><a href="{link_esc}" style="color:#888">{link_esc}</a></p>'
+            '</body></html>'
+        )
+        msg.attach(MIMEText(html_body, "html"))
 
     try:
         with smtplib.SMTP(host, port, timeout=10) as s:
@@ -138,7 +161,7 @@ def _send_email(subject: str, body: str, cfg: dict):
         log.error(f"NOTIF  email failed: {exc}")
 
 
-def _send_ntfy(title: str, body: str, priority: str, cfg: dict):
+def _send_ntfy(title: str, body: str, priority: str, cfg: dict, link: str = "", action_label: str = "Open Dashboard"):
     import requests
     base  = (cfg["ntfy_url"] or "https://ntfy.sh").rstrip("/")
     topic = cfg["ntfy_topic"]
@@ -154,6 +177,10 @@ def _send_ntfy(title: str, body: str, priority: str, cfg: dict):
         "Priority": priority,
         "Tags":     "water_pump",
     }
+    if link:
+        # Tapping the notification opens the link; also add a button.
+        headers["Click"]   = link
+        headers["Actions"] = f"view, {action_label}, {link}"
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
@@ -173,11 +200,13 @@ def _dispatch(event: str, title: str, body: str, priority: str = "default"):
     if cfg.get(f"trigger_{event}", "1") != "1":
         return
 
+    link = _dashboard_link()
+
     if cfg["email_enabled"] == "1":
-        _send_email(f"PumpSleeper: {title}", body, cfg)
+        _send_email(f"PumpSleeper: {title}", body, cfg, link)
 
     if cfg["ntfy_enabled"] == "1":
-        _send_ntfy(title, body, priority, cfg)
+        _send_ntfy(title, body, priority, cfg, link)
 
 
 def notify(event: str, detail: str = ""):
@@ -205,6 +234,28 @@ def notify(event: str, detail: str = ""):
 
 
 # ---------------------------------------------------------------------------
+# Password reset link
+# ---------------------------------------------------------------------------
+
+def send_reset(reset_url: str) -> list:
+    """Send a password-reset link over every enabled channel.
+    Returns the list of channels used (empty if none are configured)."""
+    cfg = get_settings()
+    title = "PumpSleeper password reset"
+    body  = ("A password reset was requested for your PumpSleeper dashboard. "
+             "Use the link below within 30 minutes to set a new password. "
+             "If this wasn't you, you can ignore this message.")
+    sent = []
+    if cfg["email_enabled"] == "1":
+        _send_email("PumpSleeper: Password reset", body, cfg, reset_url, "Reset Password")
+        sent.append("email")
+    if cfg["ntfy_enabled"] == "1":
+        _send_ntfy(title, body, "high", cfg, reset_url, "Reset Password")
+        sent.append("ntfy")
+    return sent
+
+
+# ---------------------------------------------------------------------------
 # Test helper (called from dashboard "Send test" button)
 # ---------------------------------------------------------------------------
 
@@ -214,12 +265,14 @@ def send_test(channel: str) -> tuple[bool, str]:
     Returns (success, message).
     """
     cfg = get_settings()
+    link = _dashboard_link()
     try:
         if channel == "email":
             _send_email(
                 "PumpSleeper test notification",
                 "This is a test notification from PumpSleeper. Email is working correctly.",
                 cfg,
+                link,
             )
         elif channel == "ntfy":
             _send_ntfy(
@@ -227,6 +280,7 @@ def send_test(channel: str) -> tuple[bool, str]:
                 "This is a test notification from PumpSleeper. Ntfy is working correctly.",
                 "default",
                 cfg,
+                link,
             )
         else:
             return False, f"Unknown channel: {channel}"

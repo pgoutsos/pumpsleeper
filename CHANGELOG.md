@@ -4,6 +4,17 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v2.2] — 2026-06-01
+
+### New
+- Forgot Password on the login screen — sends a single-use reset link (valid for 30 minutes) over your configured email and/or ntfy channels, letting you set a new password without being locked out
+- Notifications now include a tap-through link to the dashboard — an "Open Dashboard" button in email, and a tap action plus button in ntfy. The link uses the public web-access URL when the Cloudflare tunnel is on, otherwise the local address
+
+### Improved
+- Settings layout: the Security & Web Access and Updates cards now sit side by side on desktop for better use of space
+
+---
+
 ## [v2.1] — 2026-06-01
 
 ### New

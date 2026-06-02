@@ -7,6 +7,7 @@ Reads events.jsonl written by server.py and serves a live monitoring dashboard.
 import os
 import re
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -34,13 +35,27 @@ app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
 )
 
+# Record the dashboard's LAN address so notifications (which may be sent from the
+# separate proxy process) can include a working link when no tunnel is up.
+def _record_local_url():
+    try:
+        host = socket.gethostname() or "raspberrypi"
+        if "." not in host:
+            host += ".local"
+        from db import _set_setting
+        _set_setting("dashboard_local_url", f"http://{host}:{DASH_PORT}")
+    except Exception:
+        pass
+
+_record_local_url()
+
 # ---------------------------------------------------------------------------
 # Login gate — every request requires a session, except the login page itself
 # and Flask's static endpoint. (Login is always required, LAN included.)
 # ---------------------------------------------------------------------------
 @app.before_request
 def _require_login():
-    if request.endpoint in ("login", "static"):
+    if request.endpoint in ("login", "static", "forgot", "reset"):
         return
     if session.get("authed"):
         return
@@ -752,7 +767,7 @@ TEMPLATE = """<!DOCTYPE html>
   </div>
 
   <!-- ── Security & Web Access ─────────────────────────────────────── -->
-  <div class="card full-width" id="security-card">
+  <div class="card" id="security-card">
     <div class="section-title">Security &amp; Web Access</div>
     <div style="display:flex;flex-direction:column;gap:14px;margin-top:6px">
       <p style="font-size:12px;color:var(--muted);line-height:1.5">
@@ -805,7 +820,7 @@ TEMPLATE = """<!DOCTYPE html>
   </div>
 
   <!-- ── Updates ──────────────────────────────────────────────────── -->
-  <div class="card full-width" id="update-card">
+  <div class="card" id="update-card">
     <div class="section-title">Updates</div>
     <div style="display:flex;flex-direction:column;gap:12px;margin-top:4px">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
@@ -2496,6 +2511,11 @@ def _read_tunnel_output(proc):
             if m:
                 url = m.group(0)
                 _tunnel_url = url
+                try:
+                    from db import _set_setting
+                    _set_setting("tunnel_public_url", url)
+                except Exception:
+                    pass
                 if url != last_notified:
                     last_notified = url
                     try:
@@ -2547,6 +2567,11 @@ def stop_tunnel():
                 pass
         _tunnel_proc = None
         _tunnel_url = None
+        try:
+            from db import _set_setting
+            _set_setting("tunnel_public_url", "")
+        except Exception:
+            pass
 
 def _wait_for_tunnel_url(timeout=12.0):
     deadline = time.time() + timeout
@@ -2600,6 +2625,7 @@ LOGIN_TEMPLATE = """<!DOCTYPE html>
     <label for="password">Password</label>
     <input id="password" name="password" type="password" autocomplete="current-password">
     <button type="submit">Sign in</button>
+    <div style="margin-top:14px;text-align:center"><a href="/forgot" style="color:var(--blue);font-size:13px;text-decoration:none">Forgot password?</a></div>
     {% if error %}<div class="err">{{ error }}</div>{% endif %}
     {% if default_warn %}<div class="warn">&#9888; Still using the default <strong>admin / admin</strong> login. Change it in Settings &rarr; Security after signing in.</div>{% endif %}
   </form>
@@ -2648,6 +2674,133 @@ def login():
 def logout():
     session.clear()
     return redirect(url_for("login"))
+
+
+# ---------------------------------------------------------------------------
+# Forgot / reset password — the reset link is delivered over the configured
+# notification channels (email and/or ntfy). Token is single-use, 30-min TTL.
+# ---------------------------------------------------------------------------
+_AUTH_CSS = """
+  :root { --bg:#0f1117; --card:#1a1d27; --border:#2a2d3a; --text:#e2e8f0;
+          --muted:#8892a4; --blue:#3b82f6; --red:#ef4444; --green:#22c55e; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif;
+         min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+  .login-card { background:var(--card); border:1px solid var(--border); border-radius:14px;
+                padding:32px 28px; width:100%; max-width:360px; }
+  h1 { font-size:22px; font-weight:600; letter-spacing:0.5px; margin-bottom:4px; }
+  h1 span { color:var(--blue); }
+  .sub { font-size:13px; color:var(--muted); margin-bottom:22px; }
+  label { display:block; font-size:12px; color:var(--muted); margin:14px 0 5px; }
+  input { width:100%; background:var(--bg); border:1px solid var(--border); border-radius:8px;
+          color:var(--text); font-size:16px; padding:11px 12px; outline:none; }
+  input:focus { border-color:var(--blue); }
+  button { width:100%; margin-top:22px; padding:12px; border:none; border-radius:8px;
+           background:var(--blue); color:#fff; font-size:15px; font-weight:600; cursor:pointer; }
+  .err { margin-top:16px; font-size:13px; color:var(--red); }
+  .ok  { margin-top:16px; font-size:13px; color:var(--green); line-height:1.5; }
+  .backlink { margin-top:16px; text-align:center; }
+  .backlink a { color:var(--blue); font-size:13px; text-decoration:none; }
+"""
+
+FORGOT_TEMPLATE = """<!DOCTYPE html>
+<html lang="en" data-theme="dark"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PumpSleeper — Forgot password</title>
+<style>""" + _AUTH_CSS + """</style>
+</head><body>
+  <form class="login-card" method="POST">
+    <h1>Pump<span>Sleeper</span></h1>
+    <div class="sub">Reset your password</div>
+    <p style="font-size:13px;color:var(--muted);line-height:1.6">We'll send a reset link to the notification channels you've configured (email and/or ntfy). The link expires in 30 minutes.</p>
+    <button type="submit">Send reset link</button>
+    {% if msg %}<div class="ok">{{ msg }}</div>{% endif %}
+    {% if err %}<div class="err">{{ err }}</div>{% endif %}
+    <div class="backlink"><a href="/login">Back to sign in</a></div>
+  </form>
+</body></html>"""
+
+RESET_TEMPLATE = """<!DOCTYPE html>
+<html lang="en" data-theme="dark"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PumpSleeper — Reset password</title>
+<style>""" + _AUTH_CSS + """</style>
+</head><body>
+  {% if valid %}
+  <form class="login-card" method="POST">
+    <h1>Pump<span>Sleeper</span></h1>
+    <div class="sub">Set a new password</div>
+    <input type="hidden" name="token" value="{{ token }}">
+    <label for="password">New password (min 8 chars)</label>
+    <input id="password" name="password" type="password" autocomplete="new-password" autofocus>
+    <label for="password2">Confirm new password</label>
+    <input id="password2" name="password2" type="password" autocomplete="new-password">
+    <button type="submit">Set password</button>
+    {% if err %}<div class="err">{{ err }}</div>{% endif %}
+  </form>
+  {% else %}
+  <div class="login-card">
+    <h1>Pump<span>Sleeper</span></h1>
+    <div class="sub">Reset password</div>
+    <div class="err">{{ err }}</div>
+    <div class="backlink"><a href="/login">Back to sign in</a></div>
+  </div>
+  {% endif %}
+</body></html>"""
+
+_last_forgot_ts = 0.0
+FORGOT_COOLDOWN = 60   # seconds between reset-link sends
+
+@app.route("/forgot", methods=["GET", "POST"])
+def forgot():
+    global _last_forgot_ts
+    msg = err = None
+    if request.method == "POST":
+        from notifications import get_settings as _notif_settings, send_reset
+        cfg = _notif_settings()
+        if cfg.get("email_enabled") != "1" and cfg.get("ntfy_enabled") != "1":
+            err = ("No notification channel is configured, so a reset link can't be sent. "
+                   "Set up email or ntfy first.")
+        elif time.time() - _last_forgot_ts < FORGOT_COOLDOWN:
+            msg = "A reset link was just sent — check your notifications."
+        else:
+            import secrets as _secrets
+            from db import set_reset_token, _get_setting
+            token = _secrets.token_urlsafe(32)
+            set_reset_token(token, 1800)
+            base = _get_setting("tunnel_public_url", "") or _get_setting("dashboard_local_url", "")
+            reset_url = f"{base}/reset?token={token}"
+            channels = send_reset(reset_url)
+            _last_forgot_ts = time.time()
+            if channels:
+                msg = "A reset link was sent to your " + " and ".join(channels) + "."
+            else:
+                err = "No notification channel is configured."
+    return render_template_string(FORGOT_TEMPLATE, msg=msg, err=err)
+
+@app.route("/reset", methods=["GET", "POST"])
+def reset():
+    from db import verify_reset_token, set_password, clear_reset_token
+    if request.method == "POST":
+        token = request.form.get("token", "")
+        p  = request.form.get("password", "")
+        p2 = request.form.get("password2", "")
+        if not verify_reset_token(token):
+            return render_template_string(RESET_TEMPLATE, token="", valid=False,
+                                          err="This reset link is invalid or has expired.")
+        if p != p2:
+            return render_template_string(RESET_TEMPLATE, token=token, valid=True,
+                                          err="Passwords do not match.")
+        try:
+            set_password(p)
+        except ValueError as exc:
+            return render_template_string(RESET_TEMPLATE, token=token, valid=True, err=str(exc))
+        clear_reset_token()
+        return redirect(url_for("login"))
+    token = request.args.get("token", "")
+    valid = verify_reset_token(token)
+    return render_template_string(RESET_TEMPLATE, token=token, valid=valid,
+                                  err=None if valid else "This reset link is invalid or has expired.")
 
 
 # ---------------------------------------------------------------------------
