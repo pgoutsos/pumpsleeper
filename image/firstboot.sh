@@ -116,6 +116,17 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
     curl
 echo "      Done."
 
+# ── Hostname ──────────────────────────────────────────────────────────────────
+echo "[3b/8] Setting hostname to pumpsleeper..."
+hostnamectl set-hostname pumpsleeper 2>/dev/null || echo "pumpsleeper" > /etc/hostname
+if grep -q "127.0.1.1" /etc/hosts; then
+    sed -i "s/^127.0.1.1.*/127.0.1.1\tpumpsleeper/" /etc/hosts
+else
+    printf "127.0.1.1\tpumpsleeper\n" >> /etc/hosts
+fi
+systemctl restart avahi-daemon 2>/dev/null || true
+echo "      Reachable at pumpsleeper.local once mDNS settles."
+
 # ── Python dependencies ───────────────────────────────────────────────────────
 echo "[4/8] Installing Python packages..."
 pip3 install --break-system-packages --quiet --root-user-action=ignore flask waitress requests

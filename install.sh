@@ -130,6 +130,17 @@ apt-get install -y -qq \
     curl
 success "System packages installed"
 
+# ── Hostname ──────────────────────────────────────────────────────────────────
+header "Hostname"
+hostnamectl set-hostname pumpsleeper 2>/dev/null || echo "pumpsleeper" > /etc/hostname
+if grep -q "127.0.1.1" /etc/hosts; then
+    sed -i "s/^127.0.1.1.*/127.0.1.1\tpumpsleeper/" /etc/hosts
+else
+    printf "127.0.1.1\tpumpsleeper\n" >> /etc/hosts
+fi
+systemctl restart avahi-daemon 2>/dev/null || true
+success "Hostname set to pumpsleeper (reachable at pumpsleeper.local)"
+
 # ── Python dependencies ───────────────────────────────────────────────────────
 header "Python dependencies"
 pip3 install --break-system-packages --quiet \

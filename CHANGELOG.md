@@ -4,6 +4,14 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v2.3] — 2026-06-01
+
+### Improved
+- Notification settings now save automatically as you edit them — the Save button is gone, and the Test buttons always use your latest values
+- New installs set the hostname to `pumpsleeper`, so the dashboard is reachable at `http://pumpsleeper.local:8080`
+
+---
+
 ## [v2.2] — 2026-06-01
 
 ### New

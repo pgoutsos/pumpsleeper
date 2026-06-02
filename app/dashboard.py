@@ -938,11 +938,10 @@ TEMPLATE = """<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- ── Save ──────────────────────────────────────────────────── -->
-  <div class="full-width" style="display:flex;align-items:center;gap:14px">
-    <button class="save-btn" onclick="saveSettings()">Save Settings</button>
-    <span class="settings-msg" id="save-msg"></span>
-    <span id="unsaved-msg" style="display:none;font-size:12px;color:var(--yellow)">⚠ Unsaved changes — save before sending a test</span>
+  <!-- ── Auto-save status ──────────────────────────────────────── -->
+  <div class="full-width" style="display:flex;align-items:center;gap:10px">
+    <span style="font-size:12px;color:var(--muted)">Changes are saved automatically.</span>
+    <span class="settings-msg" id="save-msg" style="margin-top:0"></span>
   </div>
 
 </div><!-- /settings grid -->
@@ -1645,22 +1644,7 @@ function _setMsg(id, text, ok) {
   setTimeout(() => { el.textContent = ''; el.className = 'settings-msg'; }, 5000);
 }
 
-let _settingsDirty = false;
-
-function _markDirty() {
-  _settingsDirty = true;
-  document.getElementById('unsaved-msg').style.display = '';
-}
-
-function _markClean() {
-  _settingsDirty = false;
-  document.getElementById('unsaved-msg').style.display = 'none';
-  // Clear any "save first" warnings on the test buttons
-  ['email-test-msg','ntfy-test-msg'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el && el.textContent.includes('Save')) { el.textContent = ''; el.className = 'settings-msg'; }
-  });
-}
+// Notification settings auto-save on change — there is no manual Save button.
 
 async function loadSettings() {
   try {
@@ -1680,11 +1664,18 @@ async function loadSettings() {
       const el = document.getElementById('trigger_' + ev);
       if (el) el.checked = d['trigger_' + ev] !== '0';
     });
-    _markClean();
-    // Attach dirty listeners after populating values
-    document.querySelectorAll('#tab-settings input').forEach(el => {
-      el.addEventListener('change', _markDirty);
-      el.addEventListener('input',  _markDirty);
+    // Auto-save: persist on change for each notification field (bound once).
+    const autoSaveIds = ['email_enabled','email_smtp_host','email_smtp_port',
+      'email_smtp_user','email_smtp_pass','email_from','email_to',
+      'ntfy_enabled','ntfy_url','ntfy_topic','ntfy_token',
+      'trigger_backup_pump_ran','trigger_main_pump_ran','trigger_high_water',
+      'trigger_device_offline','trigger_update_available','trigger_update_installed'];
+    autoSaveIds.forEach(id => {
+      const el = document.getElementById(id);
+      if (el && !el.dataset.autosave) {
+        el.dataset.autosave = '1';
+        el.addEventListener('change', () => saveSettings());
+      }
     });
   } catch(e) { console.error('Failed to load settings', e); }
 }
@@ -1714,7 +1705,6 @@ async function saveSettings() {
       method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data)
     });
     const d = await r.json();
-    if (d.ok) _markClean();
     _setMsg('save-msg', d.ok ? '✓ Saved' : ('Error: ' + d.error), d.ok);
   } catch(e) { _setMsg('save-msg', 'Save failed', false); }
 }
@@ -1911,11 +1901,9 @@ async function applyUpdate() {
 }
 
 async function sendTest(channel) {
-  if (_settingsDirty) {
-    _setMsg(channel + '-test-msg', '⚠ Save your settings first before sending a test.', false);
-    return;
-  }
   const msgId = channel + '-test-msg';
+  // Persist the latest edits before the server sends a test.
+  await saveSettings();
   document.getElementById(msgId).textContent = 'Sending…';
   try {
     const r = await fetch('/api/settings/notifications/test', {
