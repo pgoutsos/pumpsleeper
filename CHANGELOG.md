@@ -4,6 +4,13 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v2.4] — 2026-06-01
+
+### New
+- Bring-your-own Cloudflare tunnel — Settings → Security now lets you choose between the zero-config **Quick tunnel** and **your own Cloudflare tunnel**. Paste your tunnel token and public hostname to expose the dashboard at a stable address on your own domain (instead of a random URL that changes on every restart)
+
+---
+
 ## [v2.3] — 2026-06-01
 
 ### Improved

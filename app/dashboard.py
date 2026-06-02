@@ -804,9 +804,40 @@ TEMPLATE = """<!DOCTYPE html>
         </div>
       </div>
       <hr style="border:none;border-top:1px solid var(--border);margin:2px 0">
+      <div style="font-size:13px;font-weight:600;color:var(--text)">Web Access</div>
+
+      <!-- Tunnel type -->
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <label class="toggle-label" style="gap:8px;align-items:flex-start">
+          <input type="radio" name="tunnel_mode" value="quick" onchange="onTunnelModeChange()" style="margin-top:3px">
+          <span>Quick tunnel <span style="color:var(--muted);font-weight:400">— no account needed; the address changes each restart</span></span>
+        </label>
+        <label class="toggle-label" style="gap:8px;align-items:flex-start">
+          <input type="radio" name="tunnel_mode" value="named" onchange="onTunnelModeChange()" style="margin-top:3px">
+          <span>My Cloudflare tunnel <span style="color:var(--muted);font-weight:400">— stable address on your own domain</span></span>
+        </label>
+      </div>
+
+      <!-- Named-tunnel fields -->
+      <div id="named-fields" style="display:none;flex-direction:column;gap:10px">
+        <div class="form-row">
+          <label>Cloudflare tunnel token</label>
+          <input class="form-input" type="password" id="cf_token" placeholder="eyJ…" autocomplete="off">
+        </div>
+        <div class="form-row">
+          <label>Public hostname (e.g. pump.example.com)</label>
+          <input class="form-input" id="cf_hostname" placeholder="pump.example.com">
+        </div>
+        <div>
+          <button class="test-btn" onclick="saveTunnelConfig()">Save tunnel settings</button>
+          <span class="settings-msg" id="tunnel-msg" style="margin-top:0"></span>
+        </div>
+        <p style="font-size:11px;color:var(--muted);line-height:1.5">In your Cloudflare Zero Trust dashboard (Networks → Tunnels), create a tunnel, route a public hostname to <strong>http://localhost:8080</strong>, then paste its token here.</p>
+      </div>
+
       <label class="toggle-label" id="webaccess-row" style="opacity:0.5">
         <input type="checkbox" id="web_access" onchange="toggleWebAccess()" disabled>
-        Make dashboard accessible from the web (Cloudflare tunnel)
+        Enable web access
       </label>
       <div id="webaccess-hint" style="font-size:11px;color:var(--muted);line-height:1.5">
         Disabled until you change the default credentials.
@@ -814,7 +845,7 @@ TEMPLATE = """<!DOCTYPE html>
       <div id="tunnel-box" style="display:none;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px 14px">
         <div style="font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted);margin-bottom:6px">Public URL</div>
         <a id="tunnel-url" href="#" target="_blank" rel="noopener" style="color:var(--blue);word-break:break-all;font-size:14px">—</a>
-        <div style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.5">This address changes each time the tunnel restarts (dashboard restart or reboot).</div>
+        <div id="tunnel-caveat" style="font-size:11px;color:var(--muted);margin-top:8px;line-height:1.5">This address changes each time the tunnel restarts (dashboard restart or reboot).</div>
       </div>
     </div>
   </div>
@@ -1541,9 +1572,18 @@ async function loadSecurity() {
       if (hint) {
         if (!d.creds_changed)              hint.textContent = 'Disabled until you change the default credentials.';
         else if (!d.cloudflared_installed) hint.textContent = 'cloudflared is not installed on the Pi — install it to enable web access.';
-        else                               hint.textContent = 'When on, a temporary Cloudflare tunnel exposes this dashboard at the URL below.';
+        else if (d.tunnel_mode === 'named') hint.textContent = 'When on, your Cloudflare tunnel exposes this dashboard at your hostname below.';
+        else                                hint.textContent = 'When on, a quick Cloudflare tunnel exposes this dashboard at the URL below.';
       }
     }
+    // Tunnel type + named-tunnel fields
+    const modeVal = d.tunnel_mode || 'quick';
+    document.querySelectorAll('input[name="tunnel_mode"]').forEach(rd => { rd.checked = (rd.value === modeVal); });
+    const hn = document.getElementById('cf_hostname');
+    if (hn && document.activeElement !== hn) hn.value = d.cf_tunnel_hostname || '';
+    const tk = document.getElementById('cf_token');
+    if (tk && document.activeElement !== tk) { tk.value = ''; tk.placeholder = d.cf_tunnel_token_saved ? '(saved)' : 'eyJ…'; }
+    _applyTunnelMode(modeVal);
     _renderTunnel(d);
   } catch(e) { console.error('Failed to load security', e); }
 }
@@ -1561,6 +1601,38 @@ function _renderTunnel(d) {
   } else {
     box.style.display = 'none';
   }
+}
+
+function _applyTunnelMode(mode) {
+  const nf = document.getElementById('named-fields');
+  if (nf) nf.style.display = (mode === 'named') ? 'flex' : 'none';
+  const cav = document.getElementById('tunnel-caveat');
+  if (cav) cav.textContent = (mode === 'named')
+    ? 'Stable address served by your Cloudflare tunnel.'
+    : 'This address changes each time the tunnel restarts (dashboard restart or reboot).';
+}
+
+function onTunnelModeChange() {
+  const sel = document.querySelector('input[name="tunnel_mode"]:checked');
+  _applyTunnelMode(sel ? sel.value : 'quick');
+  saveTunnelConfig();
+}
+
+async function saveTunnelConfig() {
+  const sel = document.querySelector('input[name="tunnel_mode"]:checked');
+  const mode = sel ? sel.value : 'quick';
+  const token = document.getElementById('cf_token').value;
+  const hostname = document.getElementById('cf_hostname').value.trim();
+  const body = { mode, hostname };
+  if (token) body.token = token;
+  try {
+    const r = await fetch('/api/settings/tunnel', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    if (d.ok) { _setMsg('tunnel-msg', '✓ Saved', true); loadSecurity(); }
+    else      { _setMsg('tunnel-msg', d.error || 'Failed', false); }
+  } catch(e) { _setMsg('tunnel-msg', 'Request failed', false); }
 }
 
 async function saveUsername() {
@@ -2487,14 +2559,28 @@ _TUNNEL_URL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 def _tunnel_running() -> bool:
     return _tunnel_proc is not None and _tunnel_proc.poll() is None
 
-def _read_tunnel_output(proc):
-    """Scrape the generated trycloudflare.com URL from cloudflared's output and
-    notify (email/ntfy) whenever it changes — the quick-tunnel URL is new on
-    every restart, so this is how you learn the current address."""
+def _notify_url(url):
+    try:
+        from notifications import notify, EVENT_WEBACCESS_URL
+        notify(EVENT_WEBACCESS_URL, f"Your PumpSleeper dashboard is now reachable at:\n{url}")
+    except Exception:
+        pass
+
+def _read_tunnel_output(proc, known_url=None):
+    """Read cloudflared's output. For a quick tunnel (known_url=None) scrape the
+    random trycloudflare.com URL and notify on change. For a named tunnel
+    (known_url set) the address is already known, so just notify once the tunnel
+    registers a connection."""
     global _tunnel_url
     last_notified = None
+    named_notified = False
     try:
         for line in proc.stdout:
+            if known_url:
+                if not named_notified and "registered tunnel connection" in line.lower():
+                    named_notified = True
+                    _notify_url(known_url)
+                continue
             m = _TUNNEL_URL_RE.search(line)
             if m:
                 url = m.group(0)
@@ -2506,20 +2592,15 @@ def _read_tunnel_output(proc):
                     pass
                 if url != last_notified:
                     last_notified = url
-                    try:
-                        from notifications import notify, EVENT_WEBACCESS_URL
-                        notify(EVENT_WEBACCESS_URL,
-                               f"Your PumpSleeper dashboard is now reachable at:\n{url}")
-                    except Exception:
-                        pass
+                    _notify_url(url)
     except Exception:
         pass
 
 def start_tunnel():
-    """Spawn the cloudflared quick tunnel.
+    """Spawn cloudflared for the configured tunnel mode.
 
-    Returns (ok, error). ok=False with error=='not installed' means cloudflared
-    is missing; otherwise error carries the exception text.
+    Returns (ok, error). ok=False errors: 'not installed' (cloudflared missing),
+    'no token' (named mode without a token), or an exception string.
     """
     global _tunnel_proc, _tunnel_url
     with _tunnel_lock:
@@ -2528,7 +2609,35 @@ def start_tunnel():
         cf = shutil.which("cloudflared")
         if not cf:
             return False, "not installed"
+        from db import get_tunnel_mode, get_tunnel_token, get_tunnel_hostname, _set_setting
+        mode = get_tunnel_mode()
         _tunnel_url = None
+        if mode == "named":
+            token = get_tunnel_token()
+            if not token:
+                return False, "no token"
+            host   = get_tunnel_hostname()
+            public = f"https://{host}" if host else ""
+            cmd = [cf, "tunnel", "--no-autoupdate", "run", "--token", token]
+            try:
+                _tunnel_proc = subprocess.Popen(
+                    cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, bufsize=1,
+                )
+            except Exception as exc:
+                _tunnel_proc = None
+                return False, str(exc)
+            # The named-tunnel address is fixed and known up front.
+            if public:
+                _tunnel_url = public
+                try:
+                    _set_setting("tunnel_public_url", public)
+                except Exception:
+                    pass
+            threading.Thread(target=_read_tunnel_output,
+                             args=(_tunnel_proc, public or None), daemon=True).start()
+            return True, None
+        # quick tunnel (default)
         try:
             _tunnel_proc = subprocess.Popen(
                 [cf, "tunnel", "--no-autoupdate", "--url", f"http://localhost:{DASH_PORT}"],
@@ -2538,7 +2647,7 @@ def start_tunnel():
         except Exception as exc:
             _tunnel_proc = None
             return False, str(exc)
-        threading.Thread(target=_read_tunnel_output, args=(_tunnel_proc,), daemon=True).start()
+        threading.Thread(target=_read_tunnel_output, args=(_tunnel_proc, None), daemon=True).start()
         return True, None
 
 def stop_tunnel():
@@ -2796,7 +2905,8 @@ def reset():
 # ---------------------------------------------------------------------------
 @app.route("/api/settings/security", methods=["GET"])
 def api_security_get():
-    from db import get_auth_username, is_default_credentials, get_web_access
+    from db import (get_auth_username, is_default_credentials, get_web_access,
+                    get_tunnel_mode, get_tunnel_token, get_tunnel_hostname)
     return jsonify({
         "username": get_auth_username(),
         "creds_changed": not is_default_credentials(),
@@ -2804,7 +2914,41 @@ def api_security_get():
         "tunnel_running": _tunnel_running(),
         "tunnel_url": _tunnel_url,
         "cloudflared_installed": shutil.which("cloudflared") is not None,
+        "tunnel_mode": get_tunnel_mode(),
+        "cf_tunnel_hostname": get_tunnel_hostname(),
+        "cf_tunnel_token_saved": bool(get_tunnel_token()),
     })
+
+@app.route("/api/settings/tunnel", methods=["POST"])
+def api_tunnel_config():
+    """Save tunnel type/token/hostname. If web access is currently on, restart
+    the tunnel so the change takes effect immediately."""
+    from db import set_tunnel_config, get_web_access, get_tunnel_mode
+    data = request.get_json(force=True, silent=True) or {}
+    mode     = data.get("mode")
+    hostname = data.get("hostname")
+    token    = data.get("token")          # only update when a non-empty value is sent
+    try:
+        set_tunnel_config(
+            mode=mode if mode in ("quick", "named") else None,
+            token=token if token else None,
+            hostname=hostname if hostname is not None else None,
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    resp = {"ok": True}
+    if get_web_access():
+        stop_tunnel()
+        ok, err = start_tunnel()
+        if not ok:
+            return jsonify({"ok": False,
+                            "error": "Saved, but the tunnel could not restart: " + str(err)}), 400
+        if get_tunnel_mode() == "named":
+            time.sleep(2.5)
+        else:
+            _wait_for_tunnel_url(timeout=12)
+        resp.update({"tunnel_running": _tunnel_running(), "tunnel_url": _tunnel_url})
+    return jsonify(resp)
 
 @app.route("/api/settings/security/username", methods=["POST"])
 def api_security_username():
@@ -2831,21 +2975,33 @@ def api_security_password():
 
 @app.route("/api/settings/web-access", methods=["POST"])
 def api_web_access():
-    from db import is_default_credentials, set_web_access
+    from db import is_default_credentials, set_web_access, get_tunnel_mode
     data = request.get_json(force=True, silent=True) or {}
     enabled = bool(data.get("enabled"))
     if enabled:
         if is_default_credentials():
             return jsonify({"ok": False,
                             "error": "Change the default username and password first."}), 400
+        mode = get_tunnel_mode()
         ok, err = start_tunnel()
         if not ok:
             if err == "not installed":
                 return jsonify({"ok": False,
                                 "error": "cloudflared is not installed on the Pi. Install it, then try again."}), 400
+            if err == "no token":
+                return jsonify({"ok": False,
+                                "error": "Enter and save your Cloudflare tunnel token first."}), 400
             return jsonify({"ok": False, "error": f"Failed to start tunnel: {err}"}), 500
+        if mode == "named":
+            # A bad token makes cloudflared exit quickly — verify it stayed up.
+            time.sleep(2.5)
+            if not _tunnel_running():
+                stop_tunnel()
+                return jsonify({"ok": False,
+                                "error": "The tunnel failed to start — check your Cloudflare token."}), 400
+        else:
+            _wait_for_tunnel_url(timeout=12)
         set_web_access(True)
-        _wait_for_tunnel_url(timeout=12)
         return jsonify({"ok": True, "web_access": True,
                         "tunnel_running": _tunnel_running(), "tunnel_url": _tunnel_url})
     stop_tunnel()

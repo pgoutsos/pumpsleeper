@@ -353,6 +353,45 @@ def clear_reset_token():
 
 
 # ---------------------------------------------------------------------------
+# Web-access tunnel configuration
+# ---------------------------------------------------------------------------
+# Two modes:
+#   quick  — ephemeral TryCloudflare tunnel, no account (random URL each start)
+#   named  — the user's own Cloudflare "remotely-managed" tunnel, run with their
+#            token; stable URL on their own domain (cf_tunnel_hostname).
+VALID_TUNNEL_MODES = ("quick", "named")
+
+def _normalize_hostname(h: str) -> str:
+    h = (h or "").strip()
+    for pfx in ("https://", "http://"):
+        if h.lower().startswith(pfx):
+            h = h[len(pfx):]
+    return h.strip("/").strip()
+
+def get_tunnel_mode() -> str:
+    m = _get_setting("tunnel_mode", "quick")
+    return m if m in VALID_TUNNEL_MODES else "quick"
+
+def get_tunnel_token() -> str:
+    return _get_setting("cf_tunnel_token", "")
+
+def get_tunnel_hostname() -> str:
+    return _get_setting("cf_tunnel_hostname", "")
+
+def set_tunnel_config(mode=None, token=None, hostname=None):
+    """Update tunnel settings. `None` means leave that field unchanged;
+    pass token='' explicitly to clear it. Raises ValueError on bad mode."""
+    if mode is not None:
+        if mode not in VALID_TUNNEL_MODES:
+            raise ValueError(f"Invalid tunnel mode {mode!r}")
+        _set_setting("tunnel_mode", mode)
+    if token is not None:
+        _set_setting("cf_tunnel_token", token)
+    if hostname is not None:
+        _set_setting("cf_tunnel_hostname", _normalize_hostname(hostname))
+
+
+# ---------------------------------------------------------------------------
 # Write
 # ---------------------------------------------------------------------------
 def record(kind: str, payload: dict) -> str:
