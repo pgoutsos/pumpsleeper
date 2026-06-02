@@ -33,6 +33,10 @@ app.secret_key = _get_secret_key()
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
+    # Stay logged in across browser restarts. Sessions are marked permanent at
+    # login and expire after this much *inactivity* (Flask refreshes the cookie
+    # on each request), so regular use keeps you signed in.
+    PERMANENT_SESSION_LIFETIME=timedelta(days=30),
 )
 
 # Record the dashboard's LAN address so notifications (which may be sent from the
@@ -2751,6 +2755,7 @@ def login():
             p = request.form.get("password", "")
             if verify_password(u, p):
                 session.clear()
+                session.permanent = True          # persist across browser restarts
                 session["authed"] = True
                 session["user"]   = u
                 _login_attempts.pop(ip, None)

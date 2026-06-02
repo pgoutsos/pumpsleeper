@@ -4,6 +4,13 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v2.5] — 2026-06-02
+
+### Improved
+- The dashboard now keeps you signed in across browser restarts — the login uses a 30-day sliding session (refreshed each time you use it) instead of logging you out when the browser closes the tab
+
+---
+
 ## [v2.4] — 2026-06-01
 
 ### New
