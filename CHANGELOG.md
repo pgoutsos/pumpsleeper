@@ -4,6 +4,16 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v2.6] — 2026-06-02
+
+### Changed
+- Clearer device-card labels: the "Hotspot" status row is now **Pump to Raspberry Pi**, and the **Cycle Raspberry Pi Hotspot** button (was "Cycle Hotspot")
+
+### Fixed
+- Backup battery voltage is sourced from the most recent backup-pump run again (the 12 V value, matching the Pump Run History). This reverts the v2.5 attempt to read it from routine pings, which is a different, lower-voltage measurement
+
+---
+
 ## [v2.5] — 2026-06-02
 
 ### Improved

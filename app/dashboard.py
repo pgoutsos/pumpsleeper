@@ -675,7 +675,7 @@ TEMPLATE = """<!DOCTYPE html>
         <span id="s-device-ip" style="font-family:monospace;letter-spacing:0.3px">—</span>
       </div>
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--border)">
-        <span style="color:var(--muted)">Hotspot</span><span id="s-hotspot">—</span>
+        <span style="color:var(--muted)">Pump to Raspberry Pi</span><span id="s-hotspot">—</span>
       </div>
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline;padding:9px 0">
         <span style="color:var(--muted)">Last contact</span>
@@ -683,7 +683,7 @@ TEMPLATE = """<!DOCTYPE html>
       </div>
     </div>
     <div style="margin-top:auto;padding-top:16px">
-      <button class="cycle-btn" id="cycle-btn" onclick="cycleHotspot()">↺ Cycle Hotspot</button>
+      <button class="cycle-btn" id="cycle-btn" onclick="cycleHotspot()">↺ Cycle Raspberry Pi Hotspot</button>
     </div>
     <div id="cycle-status" style="display:none;margin-top:8px"></div>
   </div>
@@ -1218,16 +1218,15 @@ function update(d) {
   }
 
   document.getElementById('s-rssi').textContent = d.last_rssi !== null && d.last_rssi !== undefined ? d.last_rssi : '—';
-  // Prefer the voltage measured during the last backup run; if there hasn't been
-  // one yet, fall back to the latest value the device reports in routine pings.
-  const battRun  = (d.last_backup_battery_v !== null && d.last_backup_battery_v !== undefined) ? d.last_backup_battery_v : null;
-  const battPing = (d.last_battery_v        !== null && d.last_battery_v        !== undefined) ? d.last_battery_v        : null;
-  const battVal  = (battRun !== null) ? battRun : battPing;
-  document.getElementById('s-battery').textContent = (battVal !== null) ? battVal.toFixed(2) : '—';
+  // The 12V backup-battery voltage is only reported by the device during a
+  // backup-pump run (bbs_json) — same value as the Pump Run History "Batt V".
+  // Show the most recent one; it stays "—" until the first backup run.
+  const backupBatt = (d.last_backup_battery_v !== null && d.last_backup_battery_v !== undefined)
+    ? d.last_backup_battery_v.toFixed(2) : '—';
+  document.getElementById('s-battery').textContent = backupBatt;
   document.getElementById('s-battery-sub').textContent =
-    (battRun !== null && d.last_backup_loaded_v !== null && d.last_backup_loaded_v !== undefined)
-      ? 'loaded ' + d.last_backup_loaded_v.toFixed(3) + ' V'
-      : (battRun === null && battPing !== null ? 'from last ping' : '');
+    (d.last_backup_loaded_v !== null && d.last_backup_loaded_v !== undefined)
+      ? 'loaded ' + d.last_backup_loaded_v.toFixed(2) + ' V' : '';
 
   const runDetail = (rt, gal) => rt > 0
     ? rt + 's runtime<br>' + gal + ' gal pumped'
