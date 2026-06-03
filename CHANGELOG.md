@@ -9,6 +9,10 @@ All notable changes to PumpSleeper are documented here.
 ### Improved
 - The dashboard now keeps you signed in across browser restarts — the login uses a 30-day sliding session (refreshed each time you use it) instead of logging you out when the browser closes the tab
 
+### Fixed
+- Backup battery voltage now shows the latest value from the device's routine pings, instead of staying blank until the first backup-pump run
+- The "Updated" timestamp no longer briefly reads a negative time (e.g. "-1s ago") when the Pi's clock is slightly ahead of the browser; it now reads "just now"
+
 ---
 
 ## [v2.4] — 2026-06-01

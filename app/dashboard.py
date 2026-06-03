@@ -1161,7 +1161,9 @@ function fmtTs(ts) {
 function fmtAgo(ts) {
   if (!ts) return '';
   try {
-    const diff = Math.floor((Date.now() - new Date(ts)) / 1000);
+    let diff = Math.floor((Date.now() - new Date(ts)) / 1000);
+    if (diff < 0) diff = 0;            // guard against minor server/browser clock skew
+    if (diff < 5) return 'just now';
     if (diff < 60) return diff + 's ago';
     if (diff < 3600) return Math.floor(diff/60) + 'm ago';
     return Math.floor(diff/3600) + 'h ago';
@@ -1216,12 +1218,16 @@ function update(d) {
   }
 
   document.getElementById('s-rssi').textContent = d.last_rssi !== null && d.last_rssi !== undefined ? d.last_rssi : '—';
-  const backupBatt = (d.last_backup_battery_v !== null && d.last_backup_battery_v !== undefined)
-    ? d.last_backup_battery_v.toFixed(3) : '—';
-  document.getElementById('s-battery').textContent = backupBatt;
+  // Prefer the voltage measured during the last backup run; if there hasn't been
+  // one yet, fall back to the latest value the device reports in routine pings.
+  const battRun  = (d.last_backup_battery_v !== null && d.last_backup_battery_v !== undefined) ? d.last_backup_battery_v : null;
+  const battPing = (d.last_battery_v        !== null && d.last_battery_v        !== undefined) ? d.last_battery_v        : null;
+  const battVal  = (battRun !== null) ? battRun : battPing;
+  document.getElementById('s-battery').textContent = (battVal !== null) ? battVal.toFixed(2) : '—';
   document.getElementById('s-battery-sub').textContent =
-    (d.last_backup_loaded_v !== null && d.last_backup_loaded_v !== undefined)
-      ? 'loaded ' + d.last_backup_loaded_v.toFixed(3) + ' V' : '';
+    (battRun !== null && d.last_backup_loaded_v !== null && d.last_backup_loaded_v !== undefined)
+      ? 'loaded ' + d.last_backup_loaded_v.toFixed(3) + ' V'
+      : (battRun === null && battPing !== null ? 'from last ping' : '');
 
   const runDetail = (rt, gal) => rt > 0
     ? rt + 's runtime<br>' + gal + ' gal pumped'
