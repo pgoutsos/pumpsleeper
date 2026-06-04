@@ -259,6 +259,100 @@ StandardError=append:$INSTALL_DIR/data/dashboard.log
 WantedBy=multi-user.target
 EOF
 
+# ── USB Wi-Fi client (optional internet over a USB adapter) ───────────────────
+# Saves the home-Wi-Fi credentials and installs a boot service that, when a USB
+# Wi-Fi dongle is present, joins the home network on it (e.g. wlan1) while wlan0
+# stays the PumpSpyLab hotspot — lets a Pi Zero 2 W get internet without ethernet.
+mkdir -p "$INSTALL_DIR"
+cat > "$INSTALL_DIR/home-wifi.conf" <<EOF
+HOME_WIFI_SSID='${HOME_WIFI_SSID}'
+HOME_WIFI_PASS='${HOME_WIFI_PASS}'
+EOF
+chmod 600 "$INSTALL_DIR/home-wifi.conf"
+
+cat > /usr/local/bin/pumpsleeper-usb-wifi.sh <<'USBWIFI'
+#!/bin/bash
+# Bring up home Wi-Fi on a USB adapter (if one is present), keeping the built-in
+# radio free for the PumpSpyLab hotspot. Safe no-op when no USB adapter exists.
+set -u
+CREDS="/opt/pumpsleeper/home-wifi.conf"
+LOG="/opt/pumpsleeper/data/usb-wifi.log"
+CON="HomeWiFi-USB"
+
+log() { echo "$(date '+%F %T') $*" >> "$LOG" 2>/dev/null; }
+
+[ -r "$CREDS" ] || { log "no creds file — skipping"; exit 0; }
+# shellcheck disable=SC1090
+. "$CREDS"
+[ -n "${HOME_WIFI_SSID:-}" ] || { log "HOME_WIFI_SSID empty — skipping"; exit 0; }
+
+# The built-in Pi radio sits on the SDIO/mmc bus; a USB dongle resolves to a
+# /usb path. That's how we tell them apart.
+find_usb_wifi() {
+    local i
+    for i in /sys/class/net/wlan*; do
+        [ -e "$i" ] || continue
+        if readlink -f "$i/device" 2>/dev/null | grep -q '/usb'; then
+            basename "$i"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# USB devices can take a moment to enumerate after boot — poll briefly.
+IFACE=""
+for _ in $(seq 1 20); do
+    IFACE=$(find_usb_wifi) && break
+    sleep 1
+done
+if [ -z "$IFACE" ]; then
+    # No USB Wi-Fi this boot (e.g. dongle removed / swapped for USB-ethernet).
+    # Drop any stale USB Wi-Fi profile so it can't linger; NetworkManager will
+    # use ethernet (built-in or USB) automatically for internet.
+    log "no USB Wi-Fi adapter found — removing stale profile; using ethernet/hotspot-only"
+    nmcli con delete "$CON" 2>/dev/null || true
+    exit 0
+fi
+
+MAC=$(cat "/sys/class/net/$IFACE/address" 2>/dev/null)
+log "USB Wi-Fi adapter detected: $IFACE ($MAC) — joining $HOME_WIFI_SSID"
+
+nmcli radio wifi on 2>/dev/null || true
+nmcli dev set "$IFACE" managed yes 2>/dev/null || true
+
+# (Re)create a client connection pinned to this adapter's MAC so NetworkManager
+# never tries to use the built-in radio for the home network.
+nmcli con delete "$CON" 2>/dev/null || true
+nmcli con add type wifi con-name "$CON" ifname "$IFACE" \
+    ssid "$HOME_WIFI_SSID" \
+    wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$HOME_WIFI_PASS" \
+    connection.autoconnect yes \
+    802-11-wireless.mac-address "$MAC" >> "$LOG" 2>&1
+
+if nmcli con up "$CON" ifname "$IFACE" >> "$LOG" 2>&1; then
+    log "connected on $IFACE"
+else
+    log "connect failed — will retry next boot"
+fi
+USBWIFI
+chmod +x /usr/local/bin/pumpsleeper-usb-wifi.sh
+
+cat > /etc/systemd/system/pumpsleeper-usb-wifi.service <<EOF
+[Unit]
+Description=PumpSleeper USB Wi-Fi client (home internet via USB adapter)
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pumpsleeper-usb-wifi.sh
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 # ── Auto-update timer (files baked into image by GitHub Action) ───────────────
 if [[ -f /usr/local/lib/pumpsleeper-update.service ]]; then
     cp /usr/local/lib/pumpsleeper-update.service /etc/systemd/system/pumpsleeper-update.service
@@ -270,8 +364,10 @@ VERSION=$(cat /usr/local/lib/pumpsleeper-version 2>/dev/null || echo "dev")
 echo "$VERSION" > "$INSTALL_DIR/VERSION"
 
 systemctl daemon-reload
-systemctl enable pumpsleeper pumpsleeper-dashboard
+systemctl enable pumpsleeper pumpsleeper-dashboard pumpsleeper-usb-wifi
 systemctl start pumpsleeper pumpsleeper-dashboard
+# Configure USB Wi-Fi now if an adapter is already plugged in at first boot
+/usr/local/bin/pumpsleeper-usb-wifi.sh || true
 # Enable update timer only if files exist
 if [[ -f /etc/systemd/system/pumpsleeper-update.timer ]]; then
     systemctl enable pumpsleeper-update.timer

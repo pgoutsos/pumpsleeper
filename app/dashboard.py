@@ -677,6 +677,9 @@ TEMPLATE = """<!DOCTYPE html>
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--border)">
         <span style="color:var(--muted)">Pump to Raspberry Pi</span><span id="s-hotspot">—</span>
       </div>
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--border)">
+        <span style="color:var(--muted)">Pi Internet</span><span id="s-uplink">—</span>
+      </div>
       <div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline;padding:9px 0">
         <span style="color:var(--muted)">Last contact</span>
         <span id="s-last-ping" style="text-align:right">—</span>
@@ -1197,6 +1200,17 @@ function update(d) {
     if (d.hotspot_connected === true)       { hsEl.textContent = 'Connected';    hsEl.style.color = 'var(--green)'; }
     else if (d.hotspot_connected === false) { hsEl.textContent = 'Disconnected'; hsEl.style.color = 'var(--red)'; }
     else                                    { hsEl.textContent = '—';            hsEl.style.color = 'var(--muted)'; }
+  }
+
+  // Pi internet uplink row (how the Pi itself reaches the internet)
+  const upEl = document.getElementById('s-uplink');
+  if (upEl) {
+    const upMap = { ethernet: 'Ethernet', 'usb-wifi': 'USB Wi‑Fi', wifi: 'Wi‑Fi' };
+    if (d.pi_uplink && upMap[d.pi_uplink]) {
+      upEl.textContent = upMap[d.pi_uplink]; upEl.style.color = 'var(--green)';
+    } else {
+      upEl.textContent = 'No internet'; upEl.style.color = 'var(--red)';
+    }
   }
 
   // Device IP (hotspot row above carries the WiFi state)
@@ -3037,6 +3051,34 @@ def index():
                         max_age=60 * 60 * 24 * 365, samesite="Lax")
     return resp
 
+_uplink_cache = {"val": None, "ts": 0.0}
+
+def _detect_uplink():
+    """How the Pi currently reaches the internet, from the default-route device:
+    'ethernet', 'usb-wifi', 'wifi', or None (no internet). Cached ~30s."""
+    now = time.time()
+    if now - _uplink_cache["ts"] < 30:
+        return _uplink_cache["val"]
+    val = None
+    try:
+        out = subprocess.run(["ip", "route", "show", "default"],
+                             capture_output=True, text=True, timeout=3).stdout
+        m = re.search(r"\bdev\s+(\S+)", out)
+        if m:
+            dev = m.group(1)
+            if dev.startswith("wl"):  # a Wi-Fi client (wlan0 is the hotspot, no route)
+                try:
+                    link = os.path.realpath(f"/sys/class/net/{dev}/device")
+                    val = "usb-wifi" if "/usb" in link else "wifi"
+                except Exception:
+                    val = "wifi"
+            else:
+                val = "ethernet"   # eth0/eth1/enx…/usb0 etc.
+    except Exception:
+        val = None
+    _uplink_cache.update(val=val, ts=now)
+    return val
+
 @app.route("/api/data")
 def api_data():
     from db import get_mode
@@ -3052,6 +3094,7 @@ def api_data():
                         filter_date=filter_date,
                         filter_pump=filter_pump)
     data["mode"] = get_mode()
+    data["pi_uplink"] = _detect_uplink()
     return jsonify(data)
 
 if __name__ == "__main__":

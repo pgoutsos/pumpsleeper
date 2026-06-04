@@ -4,6 +4,14 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v2.7] — 2026-06-02
+
+### New
+- Optional USB Wi-Fi internet — if a USB Wi-Fi adapter is plugged into the Pi, the installer now auto-detects it and joins your home Wi-Fi on that adapter for internet, while the built-in radio keeps running the PumpSpyLab hotspot. This lets a Pi Zero 2 W get online (and auto-update) without an ethernet adapter. It reuses your existing home-Wi-Fi settings and falls back to ethernet / hotspot-only when no adapter is present. (Applies to newly flashed images.)
+- The dashboard's device card now shows a "Pi Internet" row indicating how the Pi itself is reaching the internet — Ethernet, USB Wi‑Fi, or "No internet" — so you can confirm the active uplink at a glance (handy after swapping a USB dongle)
+
+---
+
 ## [v2.6] — 2026-06-02
 
 ### Changed
