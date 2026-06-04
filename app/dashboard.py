@@ -976,6 +976,33 @@ TEMPLATE = """<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- ── Backup & Restore ──────────────────────────────────────── -->
+  <div class="card full-width" id="backup-card">
+    <div class="section-title">Backup &amp; Restore</div>
+    <div style="display:flex;flex-direction:column;gap:14px;margin-top:6px">
+      <p style="font-size:12px;color:var(--muted);line-height:1.5">
+        Save your settings (notifications, login, web access, theme) so you can restore them after reimaging the SD card. The backup file includes your saved credentials — keep it somewhere safe.
+      </p>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <button class="test-btn" onclick="downloadBackup()">⬇ Download backup</button>
+        <label class="test-btn" style="cursor:pointer;display:inline-flex;align-items:center">Restore from backup…
+          <input type="file" id="restore-file" accept="application/json,.json" style="display:none" onchange="restoreBackup(this)">
+        </label>
+        <span class="settings-msg" id="backup-msg" style="margin-top:0"></span>
+      </div>
+      <hr style="border:none;border-top:1px solid var(--border);margin:2px 0">
+      <label class="toggle-label">
+        <input type="checkbox" id="backup_email_enabled" onchange="saveBackupAuto()">
+        Email me a backup automatically (weekly)
+      </label>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <button class="test-btn" onclick="emailBackupNow()">Email backup now</button>
+        <span style="font-size:11px;color:var(--muted)">Requires email notifications to be configured.</span>
+        <span class="settings-msg" id="backup-email-msg" style="margin-top:0"></span>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Auto-save status ──────────────────────────────────────── -->
   <div class="full-width" style="display:flex;align-items:center;gap:10px">
     <span style="font-size:12px;color:var(--muted)">Changes are saved automatically.</span>
@@ -1554,7 +1581,7 @@ function showTab(name) {
   document.querySelectorAll('.tab-btn').forEach(b => {
     if ((b.getAttribute('onclick') || '').indexOf("'" + name + "'") !== -1) b.classList.add('active');
   });
-  if (name === 'settings') { loadSettings(); loadUpdateInfo(); loadTheme(); loadSecurity(); }
+  if (name === 'settings') { loadSettings(); loadUpdateInfo(); loadTheme(); loadSecurity(); loadBackup(); }
 }
 
 function showSubTab(name) {
@@ -1576,6 +1603,63 @@ function downloadLog() {
   // the browser then prompts for (or uses the configured) save location.
   window.location.href = '/api/debug/log';
   setTimeout(() => { if (msg) { msg.textContent = ''; } }, 4000);
+}
+
+// ── Settings backup & restore ─────────────────────────────────────────────
+function downloadBackup() {
+  const m = document.getElementById('backup-msg');
+  if (m) { m.textContent = 'Preparing…'; m.className = 'settings-msg'; }
+  window.location.href = '/api/settings/backup';
+  setTimeout(() => { if (m) m.textContent = ''; }, 3000);
+}
+
+async function restoreBackup(input) {
+  const f = input.files && input.files[0];
+  if (!f) return;
+  if (!confirm('Restore settings from this backup? This overwrites your current settings (notifications, login, web access, theme).')) { input.value = ''; return; }
+  const fd = new FormData();
+  fd.append('file', f);
+  try {
+    const r = await fetch('/api/settings/restore', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (d.ok) {
+      _setMsg('backup-msg', '✓ Restored ' + d.restored + ' settings' + (d.skipped ? ' (' + d.skipped + ' skipped)' : ''), true);
+      if (d.warning) alert(d.warning);
+      setTimeout(() => location.reload(), 1500);
+    } else {
+      _setMsg('backup-msg', d.error || 'Restore failed', false);
+    }
+  } catch(e) { _setMsg('backup-msg', 'Restore failed', false); }
+  input.value = '';
+}
+
+async function loadBackup() {
+  try {
+    const r = await fetch('/api/settings/backup/auto');
+    const d = await r.json();
+    const cb = document.getElementById('backup_email_enabled');
+    if (cb) cb.checked = !!d.enabled;
+  } catch(e) {}
+}
+
+async function saveBackupAuto() {
+  const en = document.getElementById('backup_email_enabled').checked;
+  try {
+    await fetch('/api/settings/backup/auto', {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({enabled: en})
+    });
+    _setMsg('backup-email-msg', en ? '✓ Weekly backup email on' : 'Weekly backup email off', true);
+  } catch(e) { _setMsg('backup-email-msg', 'Failed', false); }
+}
+
+async function emailBackupNow() {
+  const m = document.getElementById('backup-email-msg');
+  if (m) { m.textContent = 'Sending…'; m.className = 'settings-msg'; }
+  try {
+    const r = await fetch('/api/settings/backup/email', { method: 'POST' });
+    const d = await r.json();
+    _setMsg('backup-email-msg', d.ok ? '✓ Backup emailed' : ('✗ ' + (d.error || 'failed')), d.ok);
+  } catch(e) { _setMsg('backup-email-msg', 'Request failed', false); }
 }
 
 // ── Security & web access ─────────────────────────────────────────────────
@@ -3034,6 +3118,83 @@ def api_web_access():
                     "tunnel_running": False, "tunnel_url": None})
 
 
+# ---------------------------------------------------------------------------
+# Settings backup / restore (+ optional weekly email)
+# ---------------------------------------------------------------------------
+def _make_backup_payload() -> str:
+    import json as _json
+    from db import export_settings, BACKUP_SCHEMA
+    try:
+        from updater import get_current_version
+        ver = get_current_version()
+    except Exception:
+        ver = "unknown"
+    payload = {
+        "pumpsleeper_backup": True,
+        "app_version": ver,
+        "schema": BACKUP_SCHEMA,
+        "created": datetime.now(timezone.utc).isoformat(),
+        "settings": export_settings(),
+    }
+    return _json.dumps(payload, indent=2)
+
+@app.route("/api/settings/backup")
+def api_settings_backup():
+    body  = _make_backup_payload()
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    resp = make_response(body)
+    resp.headers["Content-Type"] = "application/json; charset=utf-8"
+    resp.headers["Content-Disposition"] = f'attachment; filename="pumpsleeper-backup-{stamp}.json"'
+    return resp
+
+@app.route("/api/settings/restore", methods=["POST"])
+def api_settings_restore():
+    import json as _json
+    from db import import_settings, BACKUP_SCHEMA
+    if request.files.get("file"):
+        raw = request.files["file"].read().decode("utf-8", "replace")
+    else:
+        raw = request.get_data(as_text=True)
+    try:
+        obj = _json.loads(raw)
+    except Exception:
+        return jsonify({"ok": False, "error": "That doesn't look like a backup file (invalid JSON)."}), 400
+    if not isinstance(obj, dict) or not obj.get("pumpsleeper_backup") or not isinstance(obj.get("settings"), dict):
+        return jsonify({"ok": False, "error": "Not a PumpSleeper backup file."}), 400
+    try:
+        from_schema = int(obj.get("schema", 1))
+    except (TypeError, ValueError):
+        from_schema = 1
+    warning = None
+    if from_schema > BACKUP_SCHEMA:
+        warning = (f"This backup was made by a newer version (schema {from_schema}) than this "
+                   f"install (schema {BACKUP_SCHEMA}). Unrecognized settings were skipped.")
+    restored, skipped = import_settings(obj["settings"], from_schema=from_schema)
+    return jsonify({"ok": True, "restored": restored, "skipped": skipped,
+                    "backup_version": obj.get("app_version", "unknown"), "warning": warning})
+
+@app.route("/api/settings/backup/email", methods=["POST"])
+def api_settings_backup_email():
+    from notifications import send_backup_email
+    from db import _set_setting
+    body  = _make_backup_payload()
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    ok, msg = send_backup_email(body.encode("utf-8"), f"pumpsleeper-backup-{stamp}.json")
+    if ok:
+        _set_setting("backup_email_last_ts", str(time.time()))
+    return jsonify({"ok": ok, "error": None if ok else msg})
+
+@app.route("/api/settings/backup/auto", methods=["GET", "POST"])
+def api_settings_backup_auto():
+    from db import _get_setting, _set_setting
+    if request.method == "POST":
+        data = request.get_json(force=True, silent=True) or {}
+        _set_setting("backup_email_enabled", "1" if data.get("enabled") else "0")
+        return jsonify({"ok": True})
+    return jsonify({"enabled": _get_setting("backup_email_enabled", "0") == "1",
+                    "last_ts": _get_setting("backup_email_last_ts", "")})
+
+
 @app.route("/")
 def index():
     from db import get_ui_theme
@@ -3096,6 +3257,29 @@ def api_data():
     data["mode"] = get_mode()
     data["pi_uplink"] = _detect_uplink()
     return jsonify(data)
+
+def _backup_email_loop():
+    """Once enabled, email a settings backup about weekly (checks hourly).
+    Persisted last-sent timestamp survives restarts so it never double-sends."""
+    INTERVAL = 7 * 24 * 3600
+    while True:
+        try:
+            from db import _get_setting, _set_setting
+            if _get_setting("backup_email_enabled", "0") == "1":
+                last = float(_get_setting("backup_email_last_ts", "0") or 0)
+                if time.time() - last >= INTERVAL:
+                    from notifications import send_backup_email
+                    body  = _make_backup_payload()
+                    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                    ok, _m = send_backup_email(body.encode("utf-8"), f"pumpsleeper-backup-{stamp}.json")
+                    if ok:
+                        _set_setting("backup_email_last_ts", str(time.time()))
+        except Exception:
+            pass
+        time.sleep(3600)
+
+threading.Thread(target=_backup_email_loop, daemon=True, name="backup-email").start()
+
 
 if __name__ == "__main__":
     init_db()

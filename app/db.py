@@ -392,6 +392,62 @@ def set_tunnel_config(mode=None, token=None, hostname=None):
 
 
 # ---------------------------------------------------------------------------
+# Settings backup / restore
+# ---------------------------------------------------------------------------
+# Bump BACKUP_SCHEMA whenever a settings key is renamed or a value's format
+# changes incompatibly, and add the transform in _migrate_backup(). Keep
+# settings ADDITIVE otherwise (never repurpose a key) so old backups stay
+# forward-compatible by default.
+BACKUP_SCHEMA = 1
+
+# Only these keys are ever exported/restored (an allowlist, so transient runtime
+# state like device_ip / tunnel_public_url / reset tokens is never carried over,
+# and unknown keys from other versions are ignored on restore).
+_RESTORABLE_KEYS = {
+    "mode",
+    "auth_username", "auth_password_hash", "auth_creds_changed", "flask_secret_key",
+    "web_access", "tunnel_mode", "cf_tunnel_token", "cf_tunnel_hostname",
+    "auto_update", "backup_email_enabled",
+}
+_RESTORABLE_PREFIXES = ("notif_", "ui_theme_")
+
+def _is_restorable(key: str) -> bool:
+    return key in _RESTORABLE_KEYS or any(key.startswith(p) for p in _RESTORABLE_PREFIXES)
+
+def export_settings() -> dict:
+    """Return the restorable configuration settings as a flat dict."""
+    with _connect() as conn:
+        rows = conn.execute("SELECT key, value FROM settings").fetchall()
+    return {r["key"]: r["value"] for r in rows if _is_restorable(r["key"])}
+
+def _migrate_backup(settings: dict, from_schema: int) -> dict:
+    """Bring an older backup's settings up to the current schema. No-ops today
+    (schema 1); add key renames / value conversions here when BACKUP_SCHEMA bumps."""
+    # Example for the future:
+    #   if from_schema < 2 and "old_key" in settings:
+    #       settings["new_key"] = transform(settings.pop("old_key"))
+    return settings
+
+def import_settings(settings: dict, from_schema: int = BACKUP_SCHEMA):
+    """Restore allowlisted settings. Returns (restored_count, skipped_count)."""
+    settings = _migrate_backup(dict(settings or {}), int(from_schema or BACKUP_SCHEMA))
+    restored = skipped = 0
+    with _write_lock:
+        with _connect() as conn:
+            for k, v in settings.items():
+                if _is_restorable(k):
+                    conn.execute(
+                        "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                        (str(k), str(v))
+                    )
+                    restored += 1
+                else:
+                    skipped += 1
+            conn.commit()
+    return restored, skipped
+
+
+# ---------------------------------------------------------------------------
 # Write
 # ---------------------------------------------------------------------------
 def record(kind: str, payload: dict) -> str:

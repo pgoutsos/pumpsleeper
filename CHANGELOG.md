@@ -4,6 +4,13 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v2.8] — 2026-06-02
+
+### New
+- Settings backup & restore — Settings → Backup & Restore lets you download your configuration (notifications, login, web access, theme — including saved credentials) as a file and restore it after reimaging the SD card. Restores are version-aware: only known settings are applied, with a count of what was restored vs skipped and a warning if the backup came from a newer version. You can also have PumpSleeper email you a backup automatically each week.
+
+---
+
 ## [v2.7] — 2026-06-02
 
 ### New

@@ -256,6 +256,55 @@ def send_reset(reset_url: str) -> list:
 
 
 # ---------------------------------------------------------------------------
+# Backup email (settings backup as an attachment)
+# ---------------------------------------------------------------------------
+
+def send_backup_email(data_bytes: bytes, filename: str):
+    """Email the settings backup as a JSON attachment to the configured address.
+    Returns (ok, message)."""
+    cfg = get_settings()
+    if cfg["email_enabled"] != "1":
+        return False, "Email notifications are not enabled"
+    host = cfg["email_smtp_host"]
+    user = cfg["email_smtp_user"]
+    to   = cfg["email_to"]
+    if not (host and user and to):
+        return False, "Email is not fully configured"
+
+    from email.mime.base import MIMEBase
+    from email import encoders
+
+    msg = MIMEMultipart()
+    msg["Subject"] = "PumpSleeper settings backup"
+    msg["From"]    = cfg["email_from"] or user
+    msg["To"]      = to
+    msg.attach(MIMEText(
+        "Attached is a backup of your PumpSleeper settings. Keep it somewhere "
+        "safe — it contains your configuration, including saved credentials. To "
+        "restore it, upload the file in Settings -> Backup & Restore after "
+        "reimaging.", "plain"))
+
+    part = MIMEBase("application", "json")
+    part.set_payload(data_bytes)
+    encoders.encode_base64(part)
+    part.add_header("Content-Disposition", f'attachment; filename="{filename}"')
+    msg.attach(part)
+
+    try:
+        port = int(cfg["email_smtp_port"] or 587)
+        with smtplib.SMTP(host, port, timeout=15) as s:
+            s.ehlo()
+            s.starttls()
+            s.login(user, cfg["email_smtp_pass"])
+            s.sendmail(msg["From"], [to], msg.as_string())
+        log.info(f"NOTIF  backup email sent -> {to}")
+        return True, "Backup emailed"
+    except Exception as exc:
+        log.error(f"NOTIF  backup email failed: {exc}")
+        return False, str(exc)
+
+
+# ---------------------------------------------------------------------------
 # Test helper (called from dashboard "Send test" button)
 # ---------------------------------------------------------------------------
 
