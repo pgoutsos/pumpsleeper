@@ -4,6 +4,13 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v3.5] — 2026-06-05
+
+### Fixed
+- Disabled the systemd hardware watchdog. Raspberry Pi OS Trixie arms a 1‑minute watchdog, and on slow/low‑RAM Pis (e.g. the Zero 2 W) the heavy first‑boot install could starve systemd enough to miss the watchdog ping — hard‑resetting the Pi and causing a failed/looping install. It's now disabled in the image (so the first boot is safe) and by firstboot for subsequent boots.
+
+---
+
 ## [v3.4] — 2026-06-05
 
 ### Fixed

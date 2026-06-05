@@ -61,6 +61,13 @@ echo "  Wi-Fi country: $WIFI_COUNTRY"
 echo "  MQTT host    : ${MQTT_HOST:-disabled}"
 echo ""
 
+# ── Disable the systemd hardware watchdog ─────────────────────────────────────
+# Pi OS Trixie arms a 1-minute watchdog that can hard-reset slow/low-RAM Pis
+# (Zero 2 W) mid-install. The image disables it for the very first boot; this
+# persists it for later boots and for install.sh-based installs.
+mkdir -p /etc/systemd/system.conf.d
+printf '[Manager]\nRuntimeWatchdogSec=0\n' > /etc/systemd/system.conf.d/10-disable-watchdog.conf
+
 # ── Change default SSH password ───────────────────────────────────────────────
 echo "[1/8] Setting login password..."
 PASS_HASH=$(echo "$SSH_PASS" | openssl passwd -6 -stdin)
