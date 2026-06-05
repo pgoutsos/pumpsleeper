@@ -67,9 +67,10 @@ jobs:
           # Disable the systemd hardware watchdog in the image. Pi OS Trixie arms a
           # 1-minute watchdog that can hard-reset slow/low-RAM Pis (e.g. Zero 2 W)
           # mid first-boot install. Must be baked in — it's armed before firstboot runs.
+          # Named 99- so it sorts AFTER Pi OS's own 40-rpi-enable-watchdog.conf (last wins).
           sudo mkdir -p /mnt/root/etc/systemd/system.conf.d
           printf '[Manager]\nRuntimeWatchdogSec=0\n' | \
-              sudo tee /mnt/root/etc/systemd/system.conf.d/10-disable-watchdog.conf > /dev/null
+              sudo tee /mnt/root/etc/systemd/system.conf.d/99-disable-watchdog.conf > /dev/null
 
           # Bake app files directly into the image
           sudo mkdir -p /mnt/root/usr/local/lib/pumpsleeper
