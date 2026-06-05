@@ -138,6 +138,15 @@ if grep -q "127.0.1.1" /etc/hosts; then
 else
     printf "127.0.1.1\tpumpsleeper\n" >> /etc/hosts
 fi
+# Newer Pi OS (Trixie) uses cloud-init, which re-applies the hostname on every
+# boot and would revert ours. Tell it to leave the hostname alone.
+if [ -f /etc/cloud/cloud.cfg ]; then
+    if grep -q '^preserve_hostname:' /etc/cloud/cloud.cfg; then
+        sed -i 's/^preserve_hostname:.*/preserve_hostname: true/' /etc/cloud/cloud.cfg
+    else
+        echo "preserve_hostname: true" >> /etc/cloud/cloud.cfg
+    fi
+fi
 systemctl restart avahi-daemon 2>/dev/null || true
 echo "      Reachable at pumpsleeper.local once mDNS settles."
 

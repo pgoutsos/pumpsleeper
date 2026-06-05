@@ -9,6 +9,7 @@ All notable changes to PumpSleeper are documented here.
 ### Fixed
 - First boot now installs the Python dependencies (Flask, Waitress, Requests) from Debian packages and **verifies Flask is importable** before reporting success. Previously it relied on `pip3`, which isn't reliably present on Raspberry Pi OS Trixie — so the step silently did nothing and the dashboard failed to start with "No module named 'flask'." It now falls back to pip if needed and prints a clear error if the dependencies can't be installed, instead of a false "Done."
 - First boot's `cloudflared` install is now reliable: it retries the download (with a longer timeout) and **verifies the binary actually runs** before declaring success, removing a partial download instead of leaving a broken file. Fixes the dashboard reporting "cloudflared not installed" when choosing the web-access option after a fresh install.
+- The `pumpsleeper` hostname now sticks across reboots — first boot tells cloud-init (used by Pi OS Trixie) to preserve the hostname, so it's no longer reverted to `raspberrypi` on later boots.
 
 ---
 
