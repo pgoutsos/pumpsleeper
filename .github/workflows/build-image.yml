@@ -20,12 +20,14 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y xz-utils kpartx
 
-      - name: Download Raspberry Pi OS Lite (arm64)
+      - name: Download Raspberry Pi OS Lite (arm64) — pinned to last Bookworm release
         run: |
-          echo "Fetching latest Pi OS Lite arm64 image URL..."
-          IMG_URL=$(curl -sL https://downloads.raspberrypi.com/raspios_lite_arm64/images/ \
-            | grep -oP 'href="\K[^"]+(?=/)' | tail -1)
-          FULL_URL="https://downloads.raspberrypi.com/raspios_lite_arm64/images/${IMG_URL}/"
+          # PINNED base OS. We deliberately do NOT grab "latest": Pi OS moved to
+          # Trixie (Debian 13), which boot-loops on the Pi Zero 2 W. This pins to
+          # the final Bookworm (Debian 12) release for reproducible, stable images.
+          # Bump this only after testing a newer release on real hardware.
+          PIOS_DIR="raspios_lite_arm64-2025-05-13"
+          FULL_URL="https://downloads.raspberrypi.com/raspios_lite_arm64/images/${PIOS_DIR}/"
           IMG_FILE=$(curl -sL "$FULL_URL" | grep -oP 'href="\K[^"]+\.img\.xz(?=")' | head -1)
           echo "Downloading: ${FULL_URL}${IMG_FILE}"
           curl -L "${FULL_URL}${IMG_FILE}" -o base.img.xz

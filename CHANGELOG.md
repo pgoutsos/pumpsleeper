@@ -4,6 +4,13 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v2.9] — 2026-06-05
+
+### Fixed
+- Pinned the Pi image to the last Raspberry Pi OS **Bookworm** release. The image build was silently pulling "latest," which had moved to **Trixie** (Debian 13) and boot-looped on the Pi Zero 2 W. Images are now built on a fixed, known-good base for reproducibility.
+
+---
+
 ## [v2.8] — 2026-06-02
 
 ### New
