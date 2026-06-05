@@ -4,6 +4,13 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v3.3] — 2026-06-05
+
+### Fixed
+- `cloudflared` now installs reliably on the **Pi Zero 2 W**. Newer cloudflared builds segfault on that board — even `cloudflared --version` — which made the web-access toggle and the named tunnel fail to start. First boot now installs a known-good older cloudflared (2025.2.0) on the Zero 2 W and the latest version everywhere else, and validates the download by file size rather than executing the binary during the memory-tight first boot.
+
+---
+
 ## [v3.2] — 2026-06-05
 
 ### Fixed

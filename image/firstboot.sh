@@ -175,25 +175,38 @@ fi
 
 # ── cloudflared (optional web access via Cloudflare quick tunnel) ─────────────
 echo "[4b/8] Installing cloudflared (for optional web access)..."
-if /usr/local/bin/cloudflared --version >/dev/null 2>&1 || command -v cloudflared >/dev/null 2>&1; then
+CF_BIN=/usr/local/bin/cloudflared
+# Validate by SIZE, not by running it — executing the ~35MB binary during the
+# memory-tight first boot can segfault on low-RAM Pis (e.g. Zero 2 W). A complete
+# download is tens of MB; a partial/failed one is much smaller.
+cf_valid() { [ -f "$CF_BIN" ] && [ "$(stat -c%s "$CF_BIN" 2>/dev/null || echo 0)" -gt 10000000 ]; }
+if cf_valid; then
     echo "      cloudflared already present."
 else
     ARCH=$(dpkg --print-architecture)
     case "$ARCH" in armhf) CF_ARCH=arm ;; *) CF_ARCH="$ARCH" ;; esac
-    CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}"
+    # Newer cloudflared builds segfault on the Pi Zero 2 W (and similar small
+    # boards). Pin a known-good older version there; use latest everywhere else.
+    PI_MODEL=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo "")
+    case "$PI_MODEL" in
+        *"Zero 2"*)
+            CF_URL="https://github.com/cloudflare/cloudflared/releases/download/2025.2.0/cloudflared-linux-${CF_ARCH}"
+            echo "      $PI_MODEL detected — using cloudflared 2025.2.0 (newer builds crash on this board)." ;;
+        *)
+            CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}" ;;
+    esac
     for attempt in 1 2 3; do
-        curl -fsSL --max-time 180 "$CF_URL" -o /usr/local/bin/cloudflared && break
-        echo "      download attempt $attempt failed; retrying..."
+        curl -fsSL --max-time 180 "$CF_URL" -o "$CF_BIN" && cf_valid && break
+        echo "      download attempt $attempt failed/incomplete; retrying..."
         sleep 3
     done
-    chmod +x /usr/local/bin/cloudflared 2>/dev/null || true
-    # Verify it actually runs — a partial/failed download must not look installed.
-    if /usr/local/bin/cloudflared --version >/dev/null 2>&1; then
+    chmod +x "$CF_BIN" 2>/dev/null || true
+    if cf_valid; then
         echo "      cloudflared installed."
     else
-        rm -f /usr/local/bin/cloudflared
+        rm -f "$CF_BIN"
         echo "      WARNING: cloudflared could not be installed — web access can be enabled later."
-        echo "      Fix after boot: sudo curl -fsSL ${CF_URL} -o /usr/local/bin/cloudflared && sudo chmod +x /usr/local/bin/cloudflared"
+        echo "      Fix after boot: sudo curl -fsSL ${CF_URL} -o ${CF_BIN} && sudo chmod +x ${CF_BIN}"
     fi
 fi
 
