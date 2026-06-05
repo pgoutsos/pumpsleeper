@@ -4,6 +4,16 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v3.0] — 2026-06-05
+
+### Changed
+- Removed the experimental USB Wi-Fi auto-configuration from the installer (added in v2.7). It was unstable on the Pi Zero 2 W, so we're back to a simple, reliable baseline: the built-in radio runs the PumpSpyLab hotspot and internet comes from ethernet.
+
+### Improved
+- First boot now prefers a wired (ethernet) connection and only brings up Wi-Fi for the install if no wired internet is detected — it no longer spins up Wi-Fi when ethernet is already connected.
+
+---
+
 ## [v2.9] — 2026-06-05
 
 ### Fixed
