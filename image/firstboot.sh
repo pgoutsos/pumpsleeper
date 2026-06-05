@@ -47,6 +47,7 @@ SSH_PASS="${SSH_PASS:-pumpspy}"
 HOTSPOT_SSID="${HOTSPOT_SSID:-PumpSpyLab}"
 HOTSPOT_PASS="${HOTSPOT_PASS:-pumpspy123}"
 HOTSPOT_IP="${HOTSPOT_IP:-192.168.50.1}"
+WIFI_COUNTRY="${WIFI_COUNTRY:-US}"
 MQTT_HOST="${MQTT_HOST:-}"
 MQTT_PORT="${MQTT_PORT:-1883}"
 MQTT_USER="${MQTT_USER:-}"
@@ -56,6 +57,7 @@ echo "Config loaded:"
 echo "  Home WiFi    : ${HOME_WIFI_SSID:-not set}"
 echo "  Hotspot SSID : $HOTSPOT_SSID"
 echo "  Hotspot IP   : $HOTSPOT_IP"
+echo "  Wi-Fi country: $WIFI_COUNTRY"
 echo "  MQTT host    : ${MQTT_HOST:-disabled}"
 echo ""
 
@@ -64,6 +66,15 @@ echo "[1/8] Setting login password..."
 PASS_HASH=$(echo "$SSH_PASS" | openssl passwd -6 -stdin)
 usermod -p "$PASS_HASH" pumpsleeper 2>/dev/null \
     || echo "      WARNING: Could not set password now — will retry after boot."
+echo "      Done."
+
+# ── Wi-Fi country (regulatory domain) ─────────────────────────────────────────
+# The Pi's Wi-Fi radio is rfkill-blocked until a country is set, which would stop
+# the PumpSpyLab hotspot from starting. Set it before any Wi-Fi/hotspot use.
+echo "[1b/8] Setting Wi-Fi country to ${WIFI_COUNTRY}..."
+raspi-config nonint do_wifi_country "$WIFI_COUNTRY" 2>/dev/null \
+    || iw reg set "$WIFI_COUNTRY" 2>/dev/null || true
+rfkill unblock wifi 2>/dev/null || true
 echo "      Done."
 
 # ── Connect to home WiFi ──────────────────────────────────────────────────────

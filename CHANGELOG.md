@@ -4,6 +4,16 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v3.1] — 2026-06-05
+
+### Added
+- `WIFI_COUNTRY` setting (default `US`) in `pumpsleeper.conf`. First boot now sets the Wi-Fi regulatory country and unblocks the radio **before** starting the hotspot — so the PumpSpyLab hotspot comes up reliably on a fresh install instead of staying rfkill-blocked until you set the country by hand.
+
+### Changed
+- Setup guide updated for the ethernet-first behavior: `HOME_WIFI_*` is now marked optional (only needed without ethernet), the hotspot is clarified as the PumpSpy device's network, and the `pumpsleeper.local` address is shown.
+
+---
+
 ## [v3.0] — 2026-06-05
 
 ### Changed
