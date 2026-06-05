@@ -143,25 +143,49 @@ echo "      Reachable at pumpsleeper.local once mDNS settles."
 
 # ── Python dependencies ───────────────────────────────────────────────────────
 echo "[4/8] Installing Python packages..."
-pip3 install --break-system-packages --quiet --root-user-action=ignore flask waitress requests
-[[ -n "$MQTT_HOST" ]] && pip3 install --break-system-packages --quiet --root-user-action=ignore paho-mqtt
-echo "      Done."
+# Install from Debian packages — reliable on Trixie's externally-managed Python.
+# (pip3 is not guaranteed to be present; relying on it silently broke installs.)
+PY_PKGS="python3-flask python3-waitress python3-requests"
+[[ -n "$MQTT_HOST" ]] && PY_PKGS="$PY_PKGS python3-paho-mqtt"
+apt-get update -qq
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $PY_PKGS
+# If a package was unavailable, fall back to pip. Then VERIFY — never print a
+# false "Done" if Flask can't actually be imported (that's what broke installs).
+if ! python3 -c "import flask, waitress, requests" 2>/dev/null; then
+    echo "      apt path incomplete — trying pip fallback..."
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-pip 2>/dev/null || true
+    pip3 install --break-system-packages --quiet flask waitress requests 2>/dev/null || true
+    [[ -n "$MQTT_HOST" ]] && pip3 install --break-system-packages --quiet paho-mqtt 2>/dev/null || true
+fi
+if python3 -c "import flask, waitress, requests" 2>/dev/null; then
+    echo "      Done."
+else
+    echo "      ERROR: Python dependencies failed to install — the dashboard will NOT start."
+    echo "      Fix after boot: sudo apt-get install -y python3-flask python3-waitress python3-requests"
+fi
 
 # ── cloudflared (optional web access via Cloudflare quick tunnel) ─────────────
 echo "[4b/8] Installing cloudflared (for optional web access)..."
-if ! command -v cloudflared >/dev/null 2>&1; then
+if /usr/local/bin/cloudflared --version >/dev/null 2>&1 || command -v cloudflared >/dev/null 2>&1; then
+    echo "      cloudflared already present."
+else
     ARCH=$(dpkg --print-architecture)
     case "$ARCH" in armhf) CF_ARCH=arm ;; *) CF_ARCH="$ARCH" ;; esac
-    if curl -fsSL --max-time 60 \
-        "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}" \
-        -o /usr/local/bin/cloudflared; then
-        chmod +x /usr/local/bin/cloudflared
+    CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}"
+    for attempt in 1 2 3; do
+        curl -fsSL --max-time 180 "$CF_URL" -o /usr/local/bin/cloudflared && break
+        echo "      download attempt $attempt failed; retrying..."
+        sleep 3
+    done
+    chmod +x /usr/local/bin/cloudflared 2>/dev/null || true
+    # Verify it actually runs — a partial/failed download must not look installed.
+    if /usr/local/bin/cloudflared --version >/dev/null 2>&1; then
         echo "      cloudflared installed."
     else
-        echo "      WARNING: cloudflared download failed — web access can be enabled later once it's installed."
+        rm -f /usr/local/bin/cloudflared
+        echo "      WARNING: cloudflared could not be installed — web access can be enabled later."
+        echo "      Fix after boot: sudo curl -fsSL ${CF_URL} -o /usr/local/bin/cloudflared && sudo chmod +x /usr/local/bin/cloudflared"
     fi
-else
-    echo "      cloudflared already present."
 fi
 
 # ── Service user ──────────────────────────────────────────────────────────────
