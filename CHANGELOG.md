@@ -4,6 +4,13 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v3.4] — 2026-06-05
+
+### Fixed
+- First boot's cloudflared "is it complete?" check now requires the binary to be at least ~25 MB (a full cloudflared is ~35 MB). The previous 10 MB threshold let a **truncated download** (e.g. a partial 16 MB file) pass as installed, leaving a cloudflared that won't run — which broke web access on the Pi Zero 2 W.
+
+---
+
 ## [v3.3] — 2026-06-05
 
 ### Fixed

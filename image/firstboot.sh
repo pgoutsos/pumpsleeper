@@ -179,7 +179,7 @@ CF_BIN=/usr/local/bin/cloudflared
 # Validate by SIZE, not by running it — executing the ~35MB binary during the
 # memory-tight first boot can segfault on low-RAM Pis (e.g. Zero 2 W). A complete
 # download is tens of MB; a partial/failed one is much smaller.
-cf_valid() { [ -f "$CF_BIN" ] && [ "$(stat -c%s "$CF_BIN" 2>/dev/null || echo 0)" -gt 10000000 ]; }
+cf_valid() { [ -f "$CF_BIN" ] && [ "$(stat -c%s "$CF_BIN" 2>/dev/null || echo 0)" -gt 25000000 ]; }
 if cf_valid; then
     echo "      cloudflared already present."
 else
