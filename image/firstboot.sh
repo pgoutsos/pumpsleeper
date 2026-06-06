@@ -69,6 +69,10 @@ echo ""
 mkdir -p /etc/systemd/system.conf.d
 rm -f /etc/systemd/system.conf.d/10-disable-watchdog.conf
 printf '[Manager]\nRuntimeWatchdogSec=0\n' > /etc/systemd/system.conf.d/99-disable-watchdog.conf
+# Apply to the ALREADY-RUNNING systemd now (a drop-in alone only takes effect on
+# the next boot — re-exec makes PID 1 re-read it so the watchdog is off for THIS
+# install, not just future boots).
+systemctl daemon-reexec 2>/dev/null || true
 
 # ── Change default SSH password ───────────────────────────────────────────────
 echo "[1/8] Setting login password..."
@@ -145,6 +149,27 @@ for _ in $(seq 1 15); do
     sleep 1
 done
 echo "      Clock now: $(date)"
+
+# ── Swap (the Zero 2 W has only 512 MB RAM) ──────────────────────────────────
+# A large apt transaction can exhaust 512 MB and OOM-reset the board mid-install.
+# Make sure there's at least ~1 GB of swap before the package install. (1 GB is
+# plenty for the install and easier on the SD card than 2 GB; bump CONF_SWAPSIZE
+# higher here if you want more.)
+echo "[2c/8] Ensuring swap space..."
+if [ -f /etc/dphys-swapfile ]; then
+    CUR_SWAP=$(grep -oP '^CONF_SWAPSIZE=\K[0-9]+' /etc/dphys-swapfile 2>/dev/null || echo 0)
+    if [ "${CUR_SWAP:-0}" -lt 1024 ]; then
+        if grep -q '^#\?CONF_SWAPSIZE=' /etc/dphys-swapfile; then
+            sed -i 's/^#\?CONF_SWAPSIZE=.*/CONF_SWAPSIZE=1024/' /etc/dphys-swapfile
+        else
+            echo 'CONF_SWAPSIZE=1024' >> /etc/dphys-swapfile
+        fi
+        dphys-swapfile swapoff 2>/dev/null || true
+        dphys-swapfile setup  2>/dev/null || true
+        dphys-swapfile swapon 2>/dev/null || true
+    fi
+fi
+echo "      Swap now: $(free -m | awk '/Swap/{print $2" MB"}')"
 
 # ── System dependencies ───────────────────────────────────────────────────────
 echo "[3/8] Installing system packages..."
