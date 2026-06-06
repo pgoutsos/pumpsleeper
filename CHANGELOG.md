@@ -4,6 +4,14 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v3.6] — 2026-06-05
+
+### Fixed
+- **WiFi hotspot crashed the Pi Zero 2 W on first boot.** The hotspot was created without a fixed band/channel, so NetworkManager let the driver auto‑select — and the Zero 2 W's Broadcom WiFi firmware (`brcmfmac`) hard‑resets the board the instant the AP comes up that way. This was the root cause of the looping first‑boot install (the Pi rebooted at the "Configuring WiFi hotspot" step before the install could finish). The hotspot is now pinned to **2.4 GHz, channel 6**, which the Zero 2 W handles cleanly.
+- **Broken `apt` on first boot due to a wrong clock.** The Pi has no real‑time clock, so at first boot it runs at the image's build date. Debian Trixie's `apt` verifies repo signatures with `sqv`, which rejects signatures that aren't "live yet" relative to the clock — so a clock in the past failed every repo fetch (stale index / 404s) and the Python dependencies never installed. Firstboot now syncs the clock (HTTP date + NTP) **before** installing packages.
+
+---
+
 ## [v3.5] — 2026-06-05
 
 ### Fixed

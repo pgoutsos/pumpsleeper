@@ -126,6 +126,26 @@ else
     done
 fi
 
+# ── Clock sync (the Pi has no real-time clock) ────────────────────────────────
+# At first boot the clock is the image's build date. Debian Trixie's apt verifies
+# repo signatures with sqv, which rejects signatures that aren't "live yet"
+# relative to the system clock — so a clock in the past breaks apt entirely
+# (404s / stale index). Set the real time BEFORE installing anything.
+echo "[2b/8] Syncing clock (no RTC on the Pi)..."
+timedatectl set-ntp true 2>/dev/null || true
+# Fast + reliable: set from an HTTP Date header; NTP can refine afterward.
+HTTP_DATE=$(curl -sI --max-time 15 http://deb.debian.org 2>/dev/null \
+    | tr -d '\r' | awk -F': ' 'tolower($1)=="date"{print $2; exit}')
+if [ -n "$HTTP_DATE" ]; then
+    date -s "$HTTP_DATE" >/dev/null 2>&1 && echo "      Clock set from network."
+fi
+# Give NTP a few seconds to confirm/refine (best effort).
+for _ in $(seq 1 15); do
+    [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = "yes" ] && break
+    sleep 1
+done
+echo "      Clock now: $(date)"
+
 # ── System dependencies ───────────────────────────────────────────────────────
 echo "[3/8] Installing system packages..."
 # Pre-answer iptables-persistent prompts so they don't block the install
@@ -265,7 +285,12 @@ nmcli con add type wifi ifname "$WIFI_IFACE" con-name "PumpSleeper-Hotspot" \
     ipv4.method shared \
     ipv4.addresses "${HOTSPOT_IP}/24" \
     wifi-sec.key-mgmt wpa-psk \
-    wifi-sec.psk "$HOTSPOT_PASS"
+    wifi-sec.psk "$HOTSPOT_PASS" \
+    802-11-wireless.band bg \
+    802-11-wireless.channel 6
+# Pin the AP to 2.4 GHz / channel 6. Without this, NetworkManager lets the
+# driver auto-select band/channel, and the Pi Zero 2 W's brcmfmac WiFi firmware
+# hard-resets the board the moment the hotspot comes up (confirmed on real hw).
 nmcli con up "PumpSleeper-Hotspot"
 echo "      Done."
 
