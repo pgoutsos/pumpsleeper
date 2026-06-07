@@ -92,6 +92,7 @@ jobs:
           # Place config template and setup guide on the boot partition (FAT32 — user editable)
           sudo cp image/pumpsleeper.conf /mnt/boot/pumpsleeper.conf
           sudo cp image/PUMPSLEEPER-SETUP.txt /mnt/boot/PUMPSLEEPER-SETUP.txt
+          sudo cp image/PUMPSLEEPER-QUICKSTART.txt /mnt/boot/PUMPSLEEPER-QUICKSTART.txt
 
       - name: Unmount image
         run: |

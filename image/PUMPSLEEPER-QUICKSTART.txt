@@ -1,0 +1,57 @@
+================================================
+ PumpSleeper — Quick Start (one page)
+================================================
+
+1. FLASH
+   - Download the latest pumpsleeper-vX.X.img.xz from:
+     https://github.com/pgoutsos/pumpsleeper/releases
+   - Open Raspberry Pi Imager > Choose OS > Use custom > pick the .img.xz
+   - Choose your SD card > Write.
+
+2. CONFIGURE (before first boot)
+   On the SD card's boot drive, edit pumpsleeper.conf.
+   The hotspot (the Wi-Fi your PumpSpy joins) has defaults
+   already set -- leave them or change them:
+     HOTSPOT_SSID=PumpSpyLab        (default; change if you like)
+     HOTSPOT_PASS=pumpspy123        (default; change if you like)
+     WIFI_COUNTRY=US
+   If you change them, use the same SSID/pass on your PumpSpy (step 6).
+
+   ONLY IF NOT USING ETHERNET, set your home Wi-Fi so the Pi can
+   get online to install (leave blank if you're on ethernet):
+     HOME_WIFI_SSID=your-home-wifi
+     HOME_WIFI_PASS=your-password
+
+   Optional:
+     SSH_PASS   = the Pi's login password (default: pumpspy)
+     MQTT_HOST  = leave blank unless you want Home Assistant
+                  integration; set to your MQTT broker address.
+   Save and eject.
+
+3. FIRST BOOT
+   Insert the card, connect ethernet if using it, power on.
+   Installs automatically in 3-5 min — do not unplug.
+   Progress: pumpsleeper-install.log on the boot drive
+   ("Installation complete!" = done).
+
+4. OPEN THE DASHBOARD
+   http://pumpsleeper.local:8080   (or http://<pi-ip>:8080)
+   Log in:  admin / admin
+
+5. SETTINGS (do these first)
+   - Security & Web Access: set User Name (Save User Name),
+     then Change Password. (Required before web access.)
+   - Notifications: enable Email and/or ntfy; Send test.
+   - Backup & Restore: Download backup and keep it safe
+     (it contains your credentials).
+   - Web Access (optional): turn on to reach the dashboard
+     from outside your home via a Cloudflare tunnel.
+
+6. CONNECT YOUR PUMPSPY DEVICE
+   Join it to the hotspot (HOTSPOT_SSID / HOTSPOT_PASS).
+   Live data appears on the dashboard.
+
+------------------------------------------------
+SSH:  ssh pumpsleeper@pumpsleeper.local   (pw: pumpspy)
+Help: https://github.com/pgoutsos/pumpsleeper
+================================================
