@@ -32,7 +32,9 @@ import os
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify, Response
 import requests as rlib
-from db import init_db, record, get_mode, set_device_ip, get_device_ip, set_hotspot_connected
+from db import (init_db, record, get_mode, set_device_ip, get_device_ip,
+                set_hotspot_connected, is_capture_enabled, set_capture_enabled,
+                CAPTURE_FILE)
 import mqtt
 import notifications as notif
 
@@ -225,6 +227,66 @@ def _track_device_ip():
         set_device_ip(ip)
         log.info(f"DEVICE  IP: {ip}")
         mqtt.publish_device_ip(ip)
+
+
+# ---------------------------------------------------------------------------
+# Raw pump-traffic capture (debug tool)
+# ---------------------------------------------------------------------------
+# When enabled from the dashboard's Debug section, every device transaction is
+# appended to CAPTURE_FILE so we can inspect a pump whose messages the parser
+# doesn't recognise. Works in BOTH proxy and takeover mode — it records what the
+# pump SENDS (identical in both modes); the response section is the real cloud
+# reply in proxy mode, or our local reply in takeover. The enabled flag is cached
+# briefly so we don't hit the DB on every request.
+_capture_flag_cache = {"value": False, "ts": 0.0}
+_CAPTURE_FLAG_TTL = 2.0   # seconds
+
+def _capture_on() -> bool:
+    import time
+    now = time.time()
+    if now - _capture_flag_cache["ts"] > _CAPTURE_FLAG_TTL:
+        try:
+            _capture_flag_cache["value"] = is_capture_enabled()
+        except Exception:
+            _capture_flag_cache["value"] = False
+        _capture_flag_cache["ts"] = now
+    return _capture_flag_cache["value"]
+
+
+@app.after_request
+def _capture_traffic(resp):
+    """Append the full request+response to the capture log while capture is on."""
+    try:
+        if request.path.startswith("/api/") or not _capture_on():
+            return resp
+        ts = datetime.now(timezone.utc).isoformat()
+        try:
+            req_body = request.get_data().decode("utf-8", "replace")
+        except Exception:
+            req_body = "<unavailable>"
+        try:
+            resp_body = resp.get_data().decode("utf-8", "replace")
+        except Exception:
+            resp_body = "<unavailable>"
+        q = request.query_string.decode("utf-8", "replace")
+        path_q = request.path + (("?" + q) if q else "")
+        headers = "\n".join(f"  {k}: {v}" for k, v in request.headers)
+        block = (
+            "=" * 72 + "\n"
+            f"{ts}  mode={get_mode()}  from={request.remote_addr}\n"
+            f"{request.method} {path_q}  ->  {resp.status_code}\n"
+            "--- request headers ---\n"
+            f"{headers}\n"
+            "--- request body ---\n"
+            f"{req_body if req_body else '(empty)'}\n"
+            "--- response body ---\n"
+            f"{(resp_body[:4000] if resp_body else '(empty)')}\n\n"
+        )
+        with open(CAPTURE_FILE, "a", encoding="utf-8") as fh:
+            fh.write(block)
+    except Exception as exc:
+        log.debug(f"CAPTURE  write failed: {exc}")
+    return resp
 
 
 # --- Logging setup -----------------------------------------------------------
@@ -592,6 +654,7 @@ def _catch(log_path, record_path):
 if __name__ == "__main__":
     from db import DB_FILE, get_mode
     init_db()
+    set_capture_enabled(False)   # never resume a debug capture across a restart
     mqtt.init()
     _threading.Thread(target=_hotspot_checker_loop, daemon=True, name="hotspot-checker").start()
     log.info(f"PumpSpy local server starting on 0.0.0.0:8081  mode={get_mode()}  real_server={REAL_SERVER}  db={DB_FILE}")

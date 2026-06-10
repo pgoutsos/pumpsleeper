@@ -1022,6 +1022,12 @@ TEMPLATE = """<!DOCTYPE html>
     <button class="test-btn" id="savelog-btn" onclick="downloadLog()">⬇ Save Log</button>
     <span style="font-size:12px;color:var(--muted)">Saves the last 2000 log lines from both PumpSleeper services to a file you choose.</span>
     <span class="settings-msg" id="savelog-msg" style="margin-top:0"></span>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;border-left:1px solid var(--border);padding-left:14px">
+      <input type="checkbox" id="capture-chk" onchange="toggleCapture(this)">
+      <span>Capture pump traffic</span>
+    </label>
+    <span style="font-size:12px;color:var(--muted)">Records every message from your pump (works in proxy or takeover mode). Uncheck to download the log.</span>
+    <span class="settings-msg" id="capture-msg" style="margin-top:0"></span>
   </div>
 </div>
 <!-- /debug actions -->
@@ -1604,6 +1610,49 @@ function downloadLog() {
   window.location.href = '/api/debug/log';
   setTimeout(() => { if (msg) { msg.textContent = ''; } }, 4000);
 }
+
+// ── Debug: capture raw pump traffic ───────────────────────────────────────
+function toggleCapture(chk) {
+  const msg = document.getElementById('capture-msg');
+  const on  = chk.checked;
+  chk.disabled = true;
+  fetch('/api/debug/capture', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: on }),
+  }).then(r => r.json()).then(d => {
+    chk.disabled = false;
+    if (!d.ok) {
+      chk.checked = !on;
+      if (msg) { msg.textContent = 'Error: ' + (d.error || 'failed'); msg.className = 'settings-msg err'; }
+      return;
+    }
+    if (on) {
+      if (msg) { msg.textContent = '● Recording… reproduce a pump run, then uncheck to download.'; msg.className = 'settings-msg'; }
+    } else {
+      if (msg) { msg.textContent = 'Saving capture…'; msg.className = 'settings-msg'; }
+      // Download the captured log (browser prompts for save location).
+      window.location.href = '/api/debug/capture/download';
+      setTimeout(() => { if (msg) { msg.textContent = 'Capture saved.'; } }, 1500);
+    }
+  }).catch(e => {
+    chk.disabled = false;
+    chk.checked = !on;
+    if (msg) { msg.textContent = 'Error: ' + e; msg.className = 'settings-msg err'; }
+  });
+}
+
+// Reflect the current capture state (e.g. after a page refresh while recording).
+function initCaptureState() {
+  const chk = document.getElementById('capture-chk');
+  if (!chk) return;
+  fetch('/api/debug/capture').then(r => r.json()).then(d => {
+    chk.checked = !!d.enabled;
+    const msg = document.getElementById('capture-msg');
+    if (d.enabled && msg) { msg.textContent = '● Recording… uncheck to download.'; msg.className = 'settings-msg'; }
+  }).catch(() => {});
+}
+initCaptureState();
 
 // ── Settings backup & restore ─────────────────────────────────────────────
 function downloadBackup() {
@@ -2651,6 +2700,66 @@ def api_debug_log():
              f"Units: {', '.join(units)} (last 2000 lines)\n"
              + "=" * 60 + "\n\n")
     resp = make_response(head + body)
+    resp.headers["Content-Type"] = "text/plain; charset=utf-8"
+    resp.headers["Content-Disposition"] = f'attachment; filename="{fname}"'
+    return resp
+
+
+@app.route("/api/debug/capture", methods=["GET"])
+def api_debug_capture_get():
+    """Report whether raw pump-traffic capture is on, and how much is recorded."""
+    from db import is_capture_enabled, CAPTURE_FILE
+    try:
+        size = os.path.getsize(CAPTURE_FILE)
+    except OSError:
+        size = 0
+    return jsonify({"enabled": is_capture_enabled(), "bytes": size})
+
+@app.route("/api/debug/capture", methods=["POST"])
+def api_debug_capture_set():
+    """Start/stop capture. Starting truncates the log to a fresh session; the
+    server process (port 8081) does the actual per-request writing."""
+    from db import set_capture_enabled, CAPTURE_FILE
+    data    = request.get_json(force=True, silent=True) or {}
+    enabled = bool(data.get("enabled"))
+    if enabled:
+        # Begin a fresh capture: write a header, THEN flip the flag on so the
+        # server only starts appending after the file is reset.
+        try:
+            with open(CAPTURE_FILE, "w", encoding="utf-8") as fh:
+                fh.write("PumpSleeper raw pump-traffic capture\n"
+                         f"Started: {datetime.now().isoformat()}\n"
+                         "Every request the pump makes is recorded below — including\n"
+                         "endpoints PumpSleeper doesn't normally handle.\n"
+                         + "=" * 72 + "\n\n")
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        set_capture_enabled(True)
+    else:
+        set_capture_enabled(False)
+    return jsonify({"ok": True, "enabled": enabled})
+
+@app.route("/api/debug/capture/download")
+def api_debug_capture_download():
+    """Serve the captured traffic log as a downloadable text file, then clear it
+    so the next capture session starts from a fresh, empty log."""
+    from db import CAPTURE_FILE
+    had_file = True
+    try:
+        with open(CAPTURE_FILE, "r", encoding="utf-8", errors="replace") as fh:
+            body = fh.read()
+    except OSError:
+        had_file = False
+        body = "(No pump traffic was captured.)\n"
+    # Clear the log now that it's been handed to the user.
+    if had_file:
+        try:
+            open(CAPTURE_FILE, "w").close()
+        except OSError:
+            pass
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    fname = f"pumpsleeper-pump-capture-{stamp}.txt"
+    resp = make_response(body)
     resp.headers["Content-Type"] = "text/plain; charset=utf-8"
     resp.headers["Content-Disposition"] = f'attachment; filename="{fname}"'
     return resp

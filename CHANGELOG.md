@@ -4,6 +4,13 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v3.8] — 2026-06-09
+
+### New
+- **Capture pump traffic (Debug).** A new *Capture pump traffic* checkbox sits beside Save Log in Settings → Debug. Tick it to record every message your PumpSpy device sends — the full request (headers + raw body) and the response — and untick it to stop and download the log. It works in **both proxy and takeover mode**, and records **all** traffic, including endpoints PumpSleeper doesn't normally handle, so a device whose messages differ from what the parser expects shows up clearly. Each captured transaction is stamped with the current mode. The log is cleared after you download it (so each session starts fresh), and capture resets off whenever the server restarts so it never runs unattended.
+
+---
+
 ## [v3.7] — 2026-06-05
 
 ### Fixed

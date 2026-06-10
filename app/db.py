@@ -27,6 +27,10 @@ DB_FILE = os.path.join(
     "pumpspy.db"
 )
 
+# Raw pump-traffic capture log (debug tool). Lives next to the DB so server.py
+# (writer) and dashboard.py (reader/download) agree on the path.
+CAPTURE_FILE = os.path.join(os.path.dirname(DB_FILE), "pump-capture.log")
+
 _write_lock = threading.Lock()
 
 
@@ -203,6 +207,19 @@ def _set_setting(key: str, value):
                 (key, str(value))
             )
             conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Pump-traffic capture (debug tool — records raw device transactions to
+# CAPTURE_FILE while enabled, in either proxy or takeover mode). The flag is a
+# transient setting (NOT in the backup allowlist) and is reset off when the
+# server starts so a capture never runs forever after a reboot.
+# ---------------------------------------------------------------------------
+def is_capture_enabled() -> bool:
+    return _get_setting("pump_capture", "0") == "1"
+
+def set_capture_enabled(enabled: bool):
+    _set_setting("pump_capture", "1" if enabled else "0")
 
 
 # ---------------------------------------------------------------------------
