@@ -4,6 +4,13 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v3.9] — 2026-06-09
+
+### Fixed
+- **Update check reported "Latest: unavailable" when a release had empty notes.** The GitHub API returns the release body as `null` when it's blank (e.g. right after publishing, before the build fills in the notes), and the updater's `data.get("body", "").strip()` crashed on the `None` — failing the whole check. It now tolerates empty/missing fields so the latest version always shows.
+
+---
+
 ## [v3.8] — 2026-06-09
 
 ### New

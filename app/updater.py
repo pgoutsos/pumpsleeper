@@ -130,10 +130,13 @@ def get_latest_release() -> dict:
         r.raise_for_status()
         data = r.json()
         return {
-            "tag":          data.get("tag_name", ""),
-            "notes":        data.get("body", "").strip(),
-            "published_at": data.get("published_at", ""),
-            "url":          data.get("html_url", ""),
+            # Use `or ""` (not just a .get default): GitHub returns these as
+            # explicit null when empty, so .get would yield None and .strip()
+            # would crash — breaking the whole update check (shows "unavailable").
+            "tag":          data.get("tag_name") or "",
+            "notes":        (data.get("body") or "").strip(),
+            "published_at": data.get("published_at") or "",
+            "url":          data.get("html_url") or "",
         }
     except Exception as exc:
         log.warning(f"UPDATE  could not fetch latest release: {exc}")
