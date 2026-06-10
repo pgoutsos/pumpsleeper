@@ -76,8 +76,18 @@ def get_current_version() -> str:
 
 
 def set_current_version(tag: str):
-    """Write the installed version tag to disk."""
+    """Write the installed version tag to disk.
+
+    Older images wrote VERSION as root *after* chowning the install dir, leaving
+    the file root-owned — so an in-place overwrite by the service user fails and
+    the dashboard keeps showing the old version after an update. We own the
+    DIRECTORY though, so unlink-then-create works regardless of the file's owner
+    and leaves a fresh, service-user-owned VERSION (self-healing, no reflash)."""
     try:
+        try:
+            os.remove(VERSION_FILE)
+        except FileNotFoundError:
+            pass
         with open(VERSION_FILE, "w") as f:
             f.write(tag.strip())
     except Exception as exc:

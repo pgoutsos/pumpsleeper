@@ -4,6 +4,13 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v3.10] — 2026-06-10
+
+### Fixed
+- **Dashboard kept showing the old version after a successful update.** On existing installs the `VERSION` file was owned by root (firstboot wrote it after chowning the install dir), so the auto-updater — which runs as the service user — couldn't rewrite it; the update applied but the version label never changed. The updater now recreates the `VERSION` file instead of overwriting it in place, which **self-heals existing installs through a normal update (no reflash needed)**, and firstboot now hands the file to the service user on fresh images.
+
+---
+
 ## [v3.9] — 2026-06-09
 
 ### Fixed

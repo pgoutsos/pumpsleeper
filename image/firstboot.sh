@@ -384,9 +384,13 @@ if [[ -f /usr/local/lib/pumpsleeper-update.service ]]; then
     cp /usr/local/lib/pumpsleeper-update.timer   /etc/systemd/system/pumpsleeper-update.timer
 fi
 
-# Write the installed version (baked in by GitHub Action, or fallback to 'dev')
+# Write the installed version (baked in by GitHub Action, or fallback to 'dev').
+# This runs as root AFTER the earlier `chown -R`, so hand VERSION back to the
+# service user — otherwise the auto-updater (which runs as $RUN_USER) can't
+# overwrite it and the dashboard keeps showing the old version after updating.
 VERSION=$(cat /usr/local/lib/pumpsleeper-version 2>/dev/null || echo "dev")
 echo "$VERSION" > "$INSTALL_DIR/VERSION"
+chown "$RUN_USER:$RUN_USER" "$INSTALL_DIR/VERSION"
 
 systemctl daemon-reload
 systemctl enable pumpsleeper pumpsleeper-dashboard
