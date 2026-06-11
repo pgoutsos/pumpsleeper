@@ -156,17 +156,22 @@ echo "      Clock now: $(date)"
 # plenty for the install and easier on the SD card than 2 GB; bump CONF_SWAPSIZE
 # higher here if you want more.)
 echo "[2c/8] Ensuring swap space..."
-if [ -f /etc/dphys-swapfile ]; then
-    CUR_SWAP=$(grep -oP '^CONF_SWAPSIZE=\K[0-9]+' /etc/dphys-swapfile 2>/dev/null || echo 0)
-    if [ "${CUR_SWAP:-0}" -lt 1024 ]; then
-        if grep -q '^#\?CONF_SWAPSIZE=' /etc/dphys-swapfile; then
-            sed -i 's/^#\?CONF_SWAPSIZE=.*/CONF_SWAPSIZE=1024/' /etc/dphys-swapfile
-        else
-            echo 'CONF_SWAPSIZE=1024' >> /etc/dphys-swapfile
-        fi
-        dphys-swapfile swapoff 2>/dev/null || true
-        dphys-swapfile setup  2>/dev/null || true
-        dphys-swapfile swapon 2>/dev/null || true
+# The 512 MB Zero 2 W OOM-resets during the memory-heavy install without real
+# swap. Pi OS images vary: some use zram (RAM-backed — does NOT relieve true
+# memory pressure), some dphys-swapfile, some neither. Rather than depend on any
+# of them, create a dedicated DISK-backed swapfile and activate it. (The rootfs
+# is resized on first boot, so there's plenty of SD space here.)
+SWAPFILE=/var/swap-pumpsleeper
+NEED_MB=2048
+# Count only real (non-zram) swap already active.
+DISK_SWAP_MB=$(awk 'NR>1 && $1 !~ /zram/ {s+=$3} END{print int(s/1024)}' /proc/swaps 2>/dev/null || echo 0)
+if [ "${DISK_SWAP_MB:-0}" -lt 1024 ] && [ ! -f "$SWAPFILE" ]; then
+    if fallocate -l "${NEED_MB}M" "$SWAPFILE" 2>/dev/null \
+       || dd if=/dev/zero of="$SWAPFILE" bs=1M count="$NEED_MB" status=none 2>/dev/null; then
+        chmod 600 "$SWAPFILE"
+        mkswap "$SWAPFILE" >/dev/null 2>&1 || true
+        swapon "$SWAPFILE" 2>/dev/null || true
+        grep -q "$SWAPFILE" /etc/fstab 2>/dev/null || echo "$SWAPFILE none swap sw 0 0" >> /etc/fstab
     fi
 fi
 echo "      Swap now: $(free -m | awk '/Swap/{print $2" MB"}')"
@@ -429,19 +434,27 @@ chown "$RUN_USER:$RUN_USER" "$INSTALL_DIR/VERSION"
 
 systemctl daemon-reload
 systemctl enable pumpsleeper pumpsleeper-dashboard
-systemctl start pumpsleeper pumpsleeper-dashboard
 # Enable update timer only if files exist
 if [[ -f /etc/systemd/system/pumpsleeper-update.timer ]]; then
     systemctl enable pumpsleeper-update.timer
-    systemctl start pumpsleeper-update.timer
+fi
+
+# ── Mark the install COMPLETE *before* starting services ──────────────────────
+# The Pi Zero 2 W can intermittently hard-reset while the services spin up at the
+# very tail of first boot. By disabling firstboot and removing the config FIRST,
+# such a reset can no longer cause an install re-run loop: everything the system
+# needs (app files, iptables, hotspot, enabled service units, VERSION) is already
+# in place above, so the enabled services simply start on the next boot. This
+# turns the old "eventually completes after a few reboots" into a first-pass win.
+systemctl disable pumpsleeper-firstboot.service 2>/dev/null || true
+rm -f "$BOOT_DIR/pumpsleeper.conf"
+
+# ── Start services (best effort — a reset here is now harmless) ───────────────
+systemctl start pumpsleeper pumpsleeper-dashboard 2>/dev/null || true
+if [[ -f /etc/systemd/system/pumpsleeper-update.timer ]]; then
+    systemctl start pumpsleeper-update.timer 2>/dev/null || true
 fi
 echo "      Done."
-
-# ── Disable firstboot service ─────────────────────────────────────────────────
-systemctl disable pumpsleeper-firstboot.service 2>/dev/null || true
-
-# ── Remove config from boot partition (contains passwords) ────────────────────
-rm -f "$BOOT_DIR/pumpsleeper.conf"
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 PI_IP=$(hostname -I | awk '{print $1}')

@@ -4,6 +4,14 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v3.12] — 2026-06-11
+
+### Fixed
+- **First boot no longer loops if the Pi resets while services start.** firstboot now marks the install complete (disables itself and removes the config) right after *enabling* the services and before *starting* them, so an intermittent hard-reset during startup can't trigger a re-install — everything the system needs is already in place, and the enabled services simply come up on the next boot. Turns the Pi Zero 2 W's "eventually installs after a few reboots" into a first-pass completion.
+- **Swap is now provisioned reliably on first boot.** The earlier swap step keyed on `dphys-swapfile`, which newer Pi OS images don't ship (they use RAM-backed `zram` that gives no real headroom). firstboot now creates a real 2 GB disk-backed swapfile directly, so the 512 MB Zero 2 W has genuine backing store for the memory-heavy install.
+
+---
+
 ## [v3.11] — 2026-06-11
 
 ### New
