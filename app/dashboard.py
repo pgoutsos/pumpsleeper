@@ -2840,10 +2840,16 @@ def api_debug_capture_download():
 
     if pcap_bytes:
         summary = _netcapture_summary(CAPTURE_PCAP)
+    elif not os.path.exists(NETCAPTURE_BIN):
+        summary = ("(No network capture — the capture helper isn't installed on this\n"
+                   "PumpSleeper. Reflash to the latest image, or run scripts/enable-netcapture.sh.)\n")
+    elif not get_device_ip():
+        summary = ("(No network capture — no PumpSpy device has connected to the hotspot\n"
+                   "yet, so there was no device traffic to record. Connect the device to\n"
+                   "the hotspot, then run the capture again while it's online.)\n")
     else:
-        summary = ("(No network capture in this session — tcpdump isn't installed on\n"
-                   "this PumpSleeper yet. Reflash to the latest image, or run the\n"
-                   "one-time setup, to capture all of the device's traffic.)\n")
+        summary = ("(No network capture was recorded — the packet capture didn't start or\n"
+                   "produced no packets. Verify tcpdump + the sudoers rule, then retry.)\n")
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:

@@ -7,11 +7,16 @@ All notable changes to PumpSleeper are documented here.
 ## [v4.0] — 2026-06-11
 
 ### Changed
-- **Dependencies are now baked into the image — first boot is "flash and go."** The build pipeline installs the Python/iptables/tcpdump/NetworkManager packages and cloudflared into the image at build time (arm64 chroot), so first boot no longer runs `apt`, downloads nothing heavy, and skips the long memory-intensive install that destabilized the Pi Zero 2 W. This removes the whole class of first-boot problems at once (the OOM/reset loop, the clock→apt-signature failures, the 3–5 minute install). First boot now just applies your config (hotspot, Wi-Fi country, password), brings up the hotspot, and starts — in seconds.
+- **Dependencies are now baked into the image — first boot is "flash and go."** The build pipeline installs the Python/iptables/tcpdump/NetworkManager packages and cloudflared into the image at build time (arm64 chroot), so first boot no longer runs `apt`, downloads nothing heavy, and skips the long memory-intensive install that destabilized the Pi Zero 2 W. This removes the whole class of first-boot problems at once (the OOM/reset loop, the clock→apt-signature failures, the 3–5 minute install). First boot now just applies your config (hotspot, Wi-Fi country, password), brings up the hotspot, and starts — in seconds. Confirmed on real hardware.
 - **cloudflared is matched to the board.** The image bakes the Zero-2-W-safe `2025.2.0` build; on more capable boards (e.g. Pi 4) first boot upgrades it to the latest build, best-effort (a board with no internet keeps the working baked build).
+
+### Fixed
+- **Network packet capture now actually runs.** The capture helper started `tcpdump` as a plain background process, which Trixie's `sudo` (1.9) killed the moment the helper returned — so no packets were ever captured. It now launches `tcpdump` as a transient systemd unit (survives `sudo` exiting) and writes to a fixed filename (the old `-C/-W` rotation appended a numeric suffix the download never read).
+- **Honest capture-download message.** When a capture produced no `.pcap`, the bundled summary always blamed a missing tcpdump. It now reports the real reason: helper not installed, no device connected to the hotspot, or no packets captured.
 
 ### Notes
 - firstboot keeps its install steps as a **self-heal fallback** — if a baked dependency is ever missing, it still installs it on-device, so the image degrades gracefully rather than bricking.
+- Existing installs can get the capture-helper fix without reflashing via `scripts/enable-netcapture.sh`.
 
 ---
 

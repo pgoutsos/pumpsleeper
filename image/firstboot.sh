@@ -366,24 +366,27 @@ netfilter-persistent save
 cat > /usr/local/bin/pumpsleeper-netcapture <<'NETCAP'
 #!/bin/bash
 set -u
-PIDFILE=/run/pumpsleeper-netcapture.pid
+UNIT=pumpsleeper-netcapture
 TCPDUMP="$(command -v tcpdump || echo /usr/bin/tcpdump)"
 case "${1:-}" in
   start)
     IFACE="${2:?}"; DEVIP="${3:?}"; OUT="${4:?}"
     [[ "$IFACE" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bad iface" >&2; exit 3; }
     [[ "$DEVIP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "bad ip" >&2; exit 3; }
-    [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
-    rm -f "$PIDFILE" "$OUT"
-    # Full payloads, single 50 MB ring file as a runaway guard (a device-only
-    # capture is tiny, so a normal session is well under that).
-    setsid "$TCPDUMP" -i "$IFACE" -nn -s 0 -C 50 -W 1 -w "$OUT" host "$DEVIP" >/dev/null 2>&1 &
-    echo $! > "$PIDFILE"
+    systemctl stop "$UNIT" 2>/dev/null || true
+    systemctl reset-failed "$UNIT" 2>/dev/null || true
+    rm -f "$OUT"
+    # Run tcpdump as a transient systemd unit so it survives this wrapper + sudo
+    # exiting (sudo 1.9 kills a plain backgrounded child). Write to exactly $OUT
+    # (no -C/-W rotation, which appends a numeric suffix the dashboard wouldn't
+    # find). Device-only traffic is tiny, so an uncapped file is fine.
+    systemd-run --quiet --unit="$UNIT" --collect \
+        "$TCPDUMP" -i "$IFACE" -nn -s 0 -w "$OUT" host "$DEVIP"
     ;;
   stop)
     OUT="${2:?}"; OWNER="${3:-}"
-    [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
-    rm -f "$PIDFILE"
+    systemctl stop "$UNIT" 2>/dev/null || true
+    systemctl reset-failed "$UNIT" 2>/dev/null || true
     sleep 1
     [ -f "$OUT" ] && [ -n "$OWNER" ] && chown "$OWNER:$OWNER" "$OUT" 2>/dev/null || true
     ;;
