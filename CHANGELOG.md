@@ -4,6 +4,20 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v3.14] — 2026-06-11
+
+### Fixed
+- **First-boot install loop, take two.** v3.12 reordered the final steps but the Zero 2 W's intermittent reset still slipped into the gap between `systemctl enable` and the config removal (those are slow D-Bus calls). firstboot now enables the services by writing the systemd `wants` symlinks directly — instant file operations — and removes the config immediately after, shrinking the vulnerable window to microseconds. All slow, reset-prone `systemctl` calls (`daemon-reload`, `start`) now run *after* the config is gone, so a reset at the tail of the install can no longer trigger a re-install.
+
+---
+
+## [v3.13] — 2026-06-11
+
+### Changed
+- **Leaner first-boot install.** Dropped `python3-pip` from the base package install — it pulled in the entire Python dev/build toolchain (`python3-dev`, `libpython3.13-dev`, `zlib1g-dev`, etc.) that's never used, since all Python dependencies are installed from apt. pip is still installed on demand only if the apt path ever fails. Fewer packages means a faster, lighter install — easier on the 512 MB Pi Zero 2 W.
+
+---
+
 ## [v3.12] — 2026-06-11
 
 ### Fixed

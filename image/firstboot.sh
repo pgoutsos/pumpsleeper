@@ -183,11 +183,15 @@ echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-
 echo iptables-persistent iptables-persistent/autosave_v6 boolean false | debconf-set-selections
 apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-    python3 python3-pip \
+    python3 \
     network-manager \
     iptables iptables-persistent \
     tcpdump \
     curl
+# Note: python3-pip is intentionally NOT installed here — all Python deps come
+# from apt in [4/8]. pip would pull the whole dev/build toolchain (python3-dev,
+# libpython3.13-dev, zlib1g-dev, ...) we never use. The [4/8] fallback installs
+# python3-pip on demand only if the apt path fails.
 echo "      Done."
 
 # ── Hostname ──────────────────────────────────────────────────────────────────
@@ -432,28 +436,36 @@ VERSION=$(cat /usr/local/lib/pumpsleeper-version 2>/dev/null || echo "dev")
 echo "$VERSION" > "$INSTALL_DIR/VERSION"
 chown "$RUN_USER:$RUN_USER" "$INSTALL_DIR/VERSION"
 
-systemctl daemon-reload
-systemctl enable pumpsleeper pumpsleeper-dashboard
-# Enable update timer only if files exist
-if [[ -f /etc/systemd/system/pumpsleeper-update.timer ]]; then
-    systemctl enable pumpsleeper-update.timer
-fi
+# ── Enable services + mark the install COMPLETE using only fast FILE ops ──────
+# The Zero 2 W intermittently hard-resets at the tail of first boot, and the
+# v3.12 reorder still lost the race because `systemctl enable/disable` are slow
+# D-Bus round-trips — the reset landed between them and the config removal. So we
+# now "enable" via direct wants-symlinks (identical to what `systemctl enable`
+# writes, but instant) and mark the install complete (remove the config + the
+# firstboot auto-start symlink) immediately after — a microsecond window. ALL the
+# slow, reset-prone systemctl calls (daemon-reload, start) happen AFTER the config
+# is gone, where a reset can no longer trigger a re-install. (The firstboot
+# service also has ConditionPathExists on the config, so removing it alone stops
+# the loop even if the disable symlink lingers.)
+WANTS=/etc/systemd/system/multi-user.target.wants
+TWANTS=/etc/systemd/system/timers.target.wants
+mkdir -p "$WANTS" "$TWANTS"
+ln -sf /etc/systemd/system/pumpsleeper.service           "$WANTS/pumpsleeper.service"
+ln -sf /etc/systemd/system/pumpsleeper-dashboard.service "$WANTS/pumpsleeper-dashboard.service"
+[ -f /etc/systemd/system/pumpsleeper-update.timer ] && \
+    ln -sf /etc/systemd/system/pumpsleeper-update.timer  "$TWANTS/pumpsleeper-update.timer"
 
-# ── Mark the install COMPLETE *before* starting services ──────────────────────
-# The Pi Zero 2 W can intermittently hard-reset while the services spin up at the
-# very tail of first boot. By disabling firstboot and removing the config FIRST,
-# such a reset can no longer cause an install re-run loop: everything the system
-# needs (app files, iptables, hotspot, enabled service units, VERSION) is already
-# in place above, so the enabled services simply start on the next boot. This
-# turns the old "eventually completes after a few reboots" into a first-pass win.
-systemctl disable pumpsleeper-firstboot.service 2>/dev/null || true
+# Mark complete (instant file ops): drop the firstboot auto-start symlink and the
+# config. After this point a reset cannot cause an install re-run.
+rm -f "$WANTS/pumpsleeper-firstboot.service"
 rm -f "$BOOT_DIR/pumpsleeper.conf"
 
-# ── Start services (best effort — a reset here is now harmless) ───────────────
+# Now the slow / reset-prone part — safe, because the install is already marked
+# complete and the services are enabled via the symlinks above.
+systemctl daemon-reload 2>/dev/null || true
 systemctl start pumpsleeper pumpsleeper-dashboard 2>/dev/null || true
-if [[ -f /etc/systemd/system/pumpsleeper-update.timer ]]; then
+[ -f /etc/systemd/system/pumpsleeper-update.timer ] && \
     systemctl start pumpsleeper-update.timer 2>/dev/null || true
-fi
 echo "      Done."
 
 # ── Done ──────────────────────────────────────────────────────────────────────
