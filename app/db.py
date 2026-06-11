@@ -30,6 +30,8 @@ DB_FILE = os.path.join(
 # Raw pump-traffic capture log (debug tool). Lives next to the DB so server.py
 # (writer) and dashboard.py (reader/download) agree on the path.
 CAPTURE_FILE = os.path.join(os.path.dirname(DB_FILE), "pump-capture.log")
+# Network packet capture (tcpdump) written alongside it during a debug capture.
+CAPTURE_PCAP = os.path.join(os.path.dirname(DB_FILE), "pump-capture.pcap")
 
 _write_lock = threading.Lock()
 

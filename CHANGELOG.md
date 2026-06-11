@@ -4,6 +4,13 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v3.11] — 2026-06-11
+
+### New
+- **Capture pump traffic now includes a full network capture.** The Debug → *Capture pump traffic* checkbox previously logged only the requests that reached the proxy on port 8081. It now also runs a `tcpdump` of *all* the device's traffic, so pump events a device sends on other ports/endpoints (which the proxy never sees) are visible. Unticking downloads a zip with the app-level log, the `.pcap`, and a connection summary listing every host:port the device contacted. Built into fresh images; existing installs can turn it on with `scripts/enable-netcapture.sh` (no reflash).
+
+---
+
 ## [v3.10] — 2026-06-10
 
 ### Fixed

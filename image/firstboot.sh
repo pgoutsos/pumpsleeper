@@ -181,6 +181,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
     python3 python3-pip \
     network-manager \
     iptables iptables-persistent \
+    tcpdump \
     curl
 echo "      Done."
 
@@ -293,6 +294,7 @@ PUMPSLEEPER_MQTT_PORT=$MQTT_PORT
 PUMPSLEEPER_MQTT_USER=$MQTT_USER
 PUMPSLEEPER_MQTT_PASSWORD=$MQTT_PASS
 PUMPSLEEPER_HOTSPOT_CON=PumpSleeper-Hotspot
+PUMPSPY_WIFI_IFACE=$WIFI_IFACE
 EOF
 chmod 600 "$INSTALL_DIR/pumpsleeper.env"
 chown -R "$RUN_USER:$RUN_USER" "$INSTALL_DIR"
@@ -332,8 +334,41 @@ sysctl -w net.ipv4.ip_forward=1 > /dev/null
 echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-pumpsleeper.conf
 netfilter-persistent save
 
+# Packet-capture helper for the dashboard's "Capture pump traffic" debug tool.
+# Lets the non-root service user run a tightly-scoped tcpdump (via the sudoers
+# rule below) to record ALL of the device's traffic — including ports the
+# app-level proxy never sees (e.g. pump events sent on a different port).
+cat > /usr/local/bin/pumpsleeper-netcapture <<'NETCAP'
+#!/bin/bash
+set -u
+PIDFILE=/run/pumpsleeper-netcapture.pid
+TCPDUMP="$(command -v tcpdump || echo /usr/bin/tcpdump)"
+case "${1:-}" in
+  start)
+    IFACE="${2:?}"; DEVIP="${3:?}"; OUT="${4:?}"
+    [[ "$IFACE" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bad iface" >&2; exit 3; }
+    [[ "$DEVIP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "bad ip" >&2; exit 3; }
+    [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
+    rm -f "$PIDFILE" "$OUT"
+    # Full payloads, single 50 MB ring file as a runaway guard (a device-only
+    # capture is tiny, so a normal session is well under that).
+    setsid "$TCPDUMP" -i "$IFACE" -nn -s 0 -C 50 -W 1 -w "$OUT" host "$DEVIP" >/dev/null 2>&1 &
+    echo $! > "$PIDFILE"
+    ;;
+  stop)
+    OUT="${2:?}"; OWNER="${3:-}"
+    [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
+    rm -f "$PIDFILE"
+    sleep 1
+    [ -f "$OUT" ] && [ -n "$OWNER" ] && chown "$OWNER:$OWNER" "$OUT" 2>/dev/null || true
+    ;;
+  *) echo "usage: $0 start <iface> <devip> <outfile> | stop <outfile> <owner>" >&2; exit 2 ;;
+esac
+NETCAP
+chmod 755 /usr/local/bin/pumpsleeper-netcapture
+
 cat > /etc/sudoers.d/pumpsleeper-hotspot \
-    <<< "$RUN_USER ALL=(ALL) NOPASSWD: /usr/bin/nmcli con down PumpSleeper-Hotspot, /usr/bin/nmcli con up PumpSleeper-Hotspot"
+    <<< "$RUN_USER ALL=(ALL) NOPASSWD: /usr/bin/nmcli con down PumpSleeper-Hotspot, /usr/bin/nmcli con up PumpSleeper-Hotspot, /usr/local/bin/pumpsleeper-netcapture"
 chmod 440 /etc/sudoers.d/pumpsleeper-hotspot
 
 # ── systemd services ──────────────────────────────────────────────────────────

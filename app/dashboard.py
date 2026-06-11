@@ -4,6 +4,7 @@ PumpSpy Dashboard — port 8080
 Reads events.jsonl written by server.py and serves a live monitoring dashboard.
 """
 
+import getpass
 import os
 import re
 import shutil
@@ -20,6 +21,8 @@ from db import load_events, init_db, get_mode_switched_ts, get_device_ip, get_ho
 SERVER_URL    = os.environ.get("PUMPSPY_SERVER_URL", "http://127.0.0.1:8081")
 HOTSPOT_CON   = os.environ.get("PUMPSLEEPER_HOTSPOT_CON", "Hotspot")
 DASH_PORT     = int(os.environ.get("PUMPSLEEPER_DASH_PORT", "8080"))
+WIFI_IFACE    = os.environ.get("PUMPSPY_WIFI_IFACE", "wlan0")   # hotspot interface
+NETCAPTURE_BIN = "/usr/local/bin/pumpsleeper-netcapture"        # sudo tcpdump wrapper
 
 app = Flask(__name__)
 
@@ -1026,7 +1029,7 @@ TEMPLATE = """<!DOCTYPE html>
       <input type="checkbox" id="capture-chk" onchange="toggleCapture(this)">
       <span>Capture pump traffic</span>
     </label>
-    <span style="font-size:12px;color:var(--muted)">Records every message from your pump (works in proxy or takeover mode). Uncheck to download the log.</span>
+    <span style="font-size:12px;color:var(--muted)">Records all of your pump's traffic — the app messages plus a full network capture (works in proxy or takeover mode). Uncheck to download the bundle.</span>
     <span class="settings-msg" id="capture-msg" style="margin-top:0"></span>
   </div>
 </div>
@@ -1628,7 +1631,9 @@ function toggleCapture(chk) {
       return;
     }
     if (on) {
-      if (msg) { msg.textContent = '● Recording… reproduce a pump run, then uncheck to download.'; msg.className = 'settings-msg'; }
+      let note = '● Recording… reproduce a pump run, then uncheck to download.';
+      if (d.network && d.network !== 'ok') { note += ' (network capture unavailable: ' + d.network + ')'; }
+      if (msg) { msg.textContent = note; msg.className = 'settings-msg'; }
     } else {
       if (msg) { msg.textContent = 'Saving capture…'; msg.className = 'settings-msg'; }
       // Download the captured log (browser prompts for save location).
@@ -2705,23 +2710,94 @@ def api_debug_log():
     return resp
 
 
+# ── Pump-traffic capture: app-level log + network (tcpdump) pcap ───────────
+# The single "Capture pump traffic" checkbox drives both: server.py records the
+# requests it sees on :8081 to CAPTURE_FILE, and (best effort) we run a tcpdump
+# of ALL the device's traffic so we can spot pump events sent on other ports.
+def _netcapture_start():
+    """Start the root tcpdump via the sudo wrapper. Returns (ok, message);
+    degrades gracefully if tcpdump / the wrapper aren't installed."""
+    from db import CAPTURE_PCAP
+    dev_ip = get_device_ip()
+    if not dev_ip:
+        return False, "device not seen on the hotspot yet"
+    if not os.path.exists(NETCAPTURE_BIN):
+        return False, "network capture not available on this install"
+    try:
+        r = subprocess.run(
+            ["sudo", "-n", NETCAPTURE_BIN, "start", WIFI_IFACE, dev_ip, CAPTURE_PCAP],
+            capture_output=True, text=True, timeout=15,
+        )
+        if r.returncode != 0:
+            return False, (r.stderr or "tcpdump failed to start").strip()
+        return True, "ok"
+    except Exception as exc:
+        return False, str(exc)
+
+def _netcapture_stop():
+    """Stop the tcpdump (best effort) and hand the pcap to the service user."""
+    from db import CAPTURE_PCAP
+    if not os.path.exists(NETCAPTURE_BIN):
+        return
+    try:
+        subprocess.run(
+            ["sudo", "-n", NETCAPTURE_BIN, "stop", CAPTURE_PCAP, getpass.getuser()],
+            capture_output=True, text=True, timeout=15,
+        )
+    except Exception as exc:
+        app.logger.warning(f"netcapture stop failed: {exc}")
+
+def _netcapture_summary(pcap_path: str) -> str:
+    """Summarise the destinations/ports the device talked to, from the pcap."""
+    try:
+        r = subprocess.run(["tcpdump", "-nn", "-q", "-r", pcap_path],
+                           capture_output=True, text=True, timeout=30)
+        out = r.stdout
+    except Exception as exc:
+        return f"(Could not read the capture: {exc})\n"
+    import collections
+    dests = collections.Counter()
+    for line in out.splitlines():
+        m = re.search(r"> (\d{1,3}(?:\.\d{1,3}){3})\.(\d+):", line)
+        if m:
+            dests[(m.group(1), int(m.group(2)))] += 1
+    lines = ["PumpSleeper network-capture summary",
+             f"Generated: {datetime.now().isoformat()}",
+             "",
+             "Destinations the device connected to (host:port  packets):",
+             "=" * 60]
+    if dests:
+        for (h, p), c in dests.most_common():
+            note = "   <- PumpSleeper proxy (intercepted)" if p == 8081 else ""
+            lines.append(f"  {h}:{p}    {c}{note}")
+    else:
+        lines.append("  (no TCP destinations seen)")
+    lines += ["",
+              "Ports other than 8081 are traffic PumpSleeper does NOT intercept —",
+              "that's where to look for this device's pump-run events."]
+    return "\n".join(lines) + "\n"
+
+
 @app.route("/api/debug/capture", methods=["GET"])
 def api_debug_capture_get():
-    """Report whether raw pump-traffic capture is on, and how much is recorded."""
+    """Report whether capture is on, how much app-level traffic is recorded, and
+    whether the network (tcpdump) capture is available on this install."""
     from db import is_capture_enabled, CAPTURE_FILE
     try:
         size = os.path.getsize(CAPTURE_FILE)
     except OSError:
         size = 0
-    return jsonify({"enabled": is_capture_enabled(), "bytes": size})
+    return jsonify({"enabled": is_capture_enabled(), "bytes": size,
+                    "network_available": os.path.exists(NETCAPTURE_BIN)})
 
 @app.route("/api/debug/capture", methods=["POST"])
 def api_debug_capture_set():
-    """Start/stop capture. Starting truncates the log to a fresh session; the
-    server process (port 8081) does the actual per-request writing."""
+    """Start/stop capture. Starting resets the app-level log and kicks off the
+    network capture; the server process (port 8081) does the per-request writing."""
     from db import set_capture_enabled, CAPTURE_FILE
     data    = request.get_json(force=True, silent=True) or {}
     enabled = bool(data.get("enabled"))
+    network = None
     if enabled:
         # Begin a fresh capture: write a header, THEN flip the flag on so the
         # server only starts appending after the file is reset.
@@ -2735,33 +2811,58 @@ def api_debug_capture_set():
         except Exception as exc:
             return jsonify({"ok": False, "error": str(exc)}), 500
         set_capture_enabled(True)
+        _ok, network = _netcapture_start()   # best effort — don't fail the toggle
     else:
         set_capture_enabled(False)
-    return jsonify({"ok": True, "enabled": enabled})
+        _netcapture_stop()
+        network = "stopped"
+    return jsonify({"ok": True, "enabled": enabled, "network": network})
 
 @app.route("/api/debug/capture/download")
 def api_debug_capture_download():
-    """Serve the captured traffic log as a downloadable text file, then clear it
-    so the next capture session starts from a fresh, empty log."""
-    from db import CAPTURE_FILE
-    had_file = True
+    """Bundle the app-level log, the network pcap, and a connection summary into a
+    zip, hand it to the user, then clear everything so the next session is fresh."""
+    import io, zipfile
+    from db import CAPTURE_FILE, CAPTURE_PCAP
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+
     try:
         with open(CAPTURE_FILE, "r", encoding="utf-8", errors="replace") as fh:
-            body = fh.read()
+            app_log = fh.read()
     except OSError:
-        had_file = False
-        body = "(No pump traffic was captured.)\n"
-    # Clear the log now that it's been handed to the user.
-    if had_file:
+        app_log = "(No app-level pump traffic was captured.)\n"
+
+    try:
+        with open(CAPTURE_PCAP, "rb") as fh:
+            pcap_bytes = fh.read()
+    except OSError:
+        pcap_bytes = None
+
+    if pcap_bytes:
+        summary = _netcapture_summary(CAPTURE_PCAP)
+    else:
+        summary = ("(No network capture in this session — tcpdump isn't installed on\n"
+                   "this PumpSleeper yet. Reflash to the latest image, or run the\n"
+                   "one-time setup, to capture all of the device's traffic.)\n")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr(f"pump-capture-{stamp}.log", app_log)
+        z.writestr(f"connection-summary-{stamp}.txt", summary)
+        if pcap_bytes:
+            z.writestr(f"pump-capture-{stamp}.pcap", pcap_bytes)
+    payload = buf.getvalue()
+
+    # Clear the capture files now that they've been handed off.
+    for p in (CAPTURE_FILE, CAPTURE_PCAP):
         try:
-            open(CAPTURE_FILE, "w").close()
+            os.remove(p)
         except OSError:
             pass
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    fname = f"pumpsleeper-pump-capture-{stamp}.txt"
-    resp = make_response(body)
-    resp.headers["Content-Type"] = "text/plain; charset=utf-8"
-    resp.headers["Content-Disposition"] = f'attachment; filename="{fname}"'
+
+    resp = make_response(payload)
+    resp.headers["Content-Type"] = "application/zip"
+    resp.headers["Content-Disposition"] = f'attachment; filename="pumpsleeper-capture-{stamp}.zip"'
     return resp
 
 # ---------------------------------------------------------------------------
@@ -3392,6 +3493,11 @@ threading.Thread(target=_backup_email_loop, daemon=True, name="backup-email").st
 
 if __name__ == "__main__":
     init_db()
+    # Stop any orphaned debug packet-capture left running from a prior process.
+    try:
+        _netcapture_stop()
+    except Exception:
+        pass
     # If web access was left enabled, bring the tunnel back up (new URL each time).
     try:
         from db import get_web_access
