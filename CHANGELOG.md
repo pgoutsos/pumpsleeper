@@ -4,6 +4,17 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v4.0] — 2026-06-11
+
+### Changed
+- **Dependencies are now baked into the image — first boot is "flash and go."** The build pipeline installs the Python/iptables/tcpdump/NetworkManager packages and cloudflared into the image at build time (arm64 chroot), so first boot no longer runs `apt`, downloads nothing heavy, and skips the long memory-intensive install that destabilized the Pi Zero 2 W. This removes the whole class of first-boot problems at once (the OOM/reset loop, the clock→apt-signature failures, the 3–5 minute install). First boot now just applies your config (hotspot, Wi-Fi country, password), brings up the hotspot, and starts — in seconds.
+- **cloudflared is matched to the board.** The image bakes the Zero-2-W-safe `2025.2.0` build; on more capable boards (e.g. Pi 4) first boot upgrades it to the latest build, best-effort (a board with no internet keeps the working baked build).
+
+### Notes
+- firstboot keeps its install steps as a **self-heal fallback** — if a baked dependency is ever missing, it still installs it on-device, so the image degrades gracefully rather than bricking.
+
+---
+
 ## [v3.14] — 2026-06-11
 
 ### Fixed

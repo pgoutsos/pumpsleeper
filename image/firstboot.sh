@@ -177,22 +177,26 @@ fi
 echo "      Swap now: $(free -m | awk '/Swap/{print $2" MB"}')"
 
 # ── System dependencies ───────────────────────────────────────────────────────
+# These are baked into the image at build time (v4.0+), so on a normal flash this
+# whole step is a no-op. We keep it as a self-heal fallback: if a dependency is
+# somehow missing (older/partial image), firstboot still installs it on-device.
 echo "[3/8] Installing system packages..."
-# Pre-answer iptables-persistent prompts so they don't block the install
-echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
-echo iptables-persistent iptables-persistent/autosave_v6 boolean false | debconf-set-selections
-apt-get update -qq
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-    python3 \
-    network-manager \
-    iptables iptables-persistent \
-    tcpdump \
-    curl
-# Note: python3-pip is intentionally NOT installed here — all Python deps come
-# from apt in [4/8]. pip would pull the whole dev/build toolchain (python3-dev,
-# libpython3.13-dev, zlib1g-dev, ...) we never use. The [4/8] fallback installs
-# python3-pip on demand only if the apt path fails.
-echo "      Done."
+if command -v nmcli >/dev/null 2>&1 && command -v iptables >/dev/null 2>&1 \
+   && command -v tcpdump >/dev/null 2>&1 && dpkg -s iptables-persistent >/dev/null 2>&1; then
+    echo "      Already present (baked into image) — skipping."
+else
+    # Pre-answer iptables-persistent prompts so they don't block the install
+    echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
+    echo iptables-persistent iptables-persistent/autosave_v6 boolean false | debconf-set-selections
+    apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+        python3 \
+        network-manager \
+        iptables iptables-persistent \
+        tcpdump \
+        curl
+    echo "      Done."
+fi
 
 # ── Hostname ──────────────────────────────────────────────────────────────────
 echo "[3b/8] Setting hostname to pumpsleeper..."
@@ -216,20 +220,24 @@ echo "      Reachable at pumpsleeper.local once mDNS settles."
 
 # ── Python dependencies ───────────────────────────────────────────────────────
 echo "[4/8] Installing Python packages..."
-# Install from Debian packages — reliable on Trixie's externally-managed Python.
-# (pip3 is not guaranteed to be present; relying on it silently broke installs.)
-PY_PKGS="python3-flask python3-waitress python3-requests"
-[[ -n "$MQTT_HOST" ]] && PY_PKGS="$PY_PKGS python3-paho-mqtt"
-apt-get update -qq
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $PY_PKGS
-# If a package was unavailable, fall back to pip. Then VERIFY — never print a
-# false "Done" if Flask can't actually be imported (that's what broke installs).
-if ! python3 -c "import flask, waitress, requests" 2>/dev/null; then
-    echo "      apt path incomplete — trying pip fallback..."
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-pip 2>/dev/null || true
-    pip3 install --break-system-packages --quiet flask waitress requests 2>/dev/null || true
-    [[ -n "$MQTT_HOST" ]] && pip3 install --break-system-packages --quiet paho-mqtt 2>/dev/null || true
+# Baked into the image at build time (v4.0+), so this is a no-op on a normal
+# flash. Self-heal fallback: if the imports don't work yet (older/partial image),
+# install from Debian packages on-device, then pip as a last resort.
+if python3 -c "import flask, waitress, requests" 2>/dev/null; then
+    echo "      Already present (baked into image) — skipping."
+else
+    PY_PKGS="python3-flask python3-waitress python3-requests"
+    [[ -n "$MQTT_HOST" ]] && PY_PKGS="$PY_PKGS python3-paho-mqtt"
+    apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $PY_PKGS
+    if ! python3 -c "import flask, waitress, requests" 2>/dev/null; then
+        echo "      apt path incomplete — trying pip fallback..."
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-pip 2>/dev/null || true
+        pip3 install --break-system-packages --quiet flask waitress requests 2>/dev/null || true
+        [[ -n "$MQTT_HOST" ]] && pip3 install --break-system-packages --quiet paho-mqtt 2>/dev/null || true
+    fi
 fi
+# VERIFY regardless — never print a false "Done" if Flask can't be imported.
 if python3 -c "import flask, waitress, requests" 2>/dev/null; then
     echo "      Done."
 else
@@ -237,42 +245,50 @@ else
     echo "      Fix after boot: sudo apt-get install -y python3-flask python3-waitress python3-requests"
 fi
 
-# ── cloudflared (optional web access via Cloudflare quick tunnel) ─────────────
-echo "[4b/8] Installing cloudflared (for optional web access)..."
+# ── cloudflared (optional web access via Cloudflare tunnel) ───────────────────
+# The image bakes cloudflared 2025.2.0 — the known-good build for the Pi Zero 2 W
+# (newer builds segfault on it). On more capable boards we upgrade to the latest
+# build at first boot, best effort: a board with no internet just keeps the
+# working baked build. Validate by SIZE, never by executing (running the ~35MB
+# binary during a memory-tight boot can segfault a small Pi).
+echo "[4b/8] Setting up cloudflared..."
 CF_BIN=/usr/local/bin/cloudflared
-# Validate by SIZE, not by running it — executing the ~35MB binary during the
-# memory-tight first boot can segfault on low-RAM Pis (e.g. Zero 2 W). A complete
-# download is tens of MB; a partial/failed one is much smaller.
-cf_valid() { [ -f "$CF_BIN" ] && [ "$(stat -c%s "$CF_BIN" 2>/dev/null || echo 0)" -gt 25000000 ]; }
-if cf_valid; then
-    echo "      cloudflared already present."
-else
-    ARCH=$(dpkg --print-architecture)
-    case "$ARCH" in armhf) CF_ARCH=arm ;; *) CF_ARCH="$ARCH" ;; esac
-    # Newer cloudflared builds segfault on the Pi Zero 2 W (and similar small
-    # boards). Pin a known-good older version there; use latest everywhere else.
-    PI_MODEL=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo "")
-    case "$PI_MODEL" in
-        *"Zero 2"*)
+cf_valid() { [ -f "$1" ] && [ "$(stat -c%s "$1" 2>/dev/null || echo 0)" -gt 25000000 ]; }
+ARCH=$(dpkg --print-architecture)
+case "$ARCH" in armhf) CF_ARCH=arm ;; *) CF_ARCH="$ARCH" ;; esac
+PI_MODEL=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo "")
+case "$PI_MODEL" in
+    *"Zero 2"*|*"Zero W"*|*"Pi Zero"*)
+        # Small/low-RAM board — keep the baked known-good 2025.2.0. Only download
+        # if it's somehow missing, and pin 2025.2.0 (latest segfaults here).
+        if cf_valid "$CF_BIN"; then
+            echo "      $PI_MODEL — keeping baked cloudflared 2025.2.0 (newer builds crash on this board)."
+        else
             CF_URL="https://github.com/cloudflare/cloudflared/releases/download/2025.2.0/cloudflared-linux-${CF_ARCH}"
-            echo "      $PI_MODEL detected — using cloudflared 2025.2.0 (newer builds crash on this board)." ;;
-        *)
-            CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}" ;;
-    esac
-    for attempt in 1 2 3; do
-        curl -fsSL --max-time 180 "$CF_URL" -o "$CF_BIN" && cf_valid && break
-        echo "      download attempt $attempt failed/incomplete; retrying..."
-        sleep 3
-    done
-    chmod +x "$CF_BIN" 2>/dev/null || true
-    if cf_valid; then
-        echo "      cloudflared installed."
-    else
-        rm -f "$CF_BIN"
-        echo "      WARNING: cloudflared could not be installed — web access can be enabled later."
-        echo "      Fix after boot: sudo curl -fsSL ${CF_URL} -o ${CF_BIN} && sudo chmod +x ${CF_BIN}"
-    fi
-fi
+            for attempt in 1 2 3; do
+                curl -fsSL --max-time 180 "$CF_URL" -o "$CF_BIN" && cf_valid "$CF_BIN" && break
+                sleep 3
+            done
+            chmod +x "$CF_BIN" 2>/dev/null || true
+            cf_valid "$CF_BIN" && echo "      cloudflared 2025.2.0 installed." \
+                || echo "      WARNING: cloudflared missing — web access can be set up later."
+        fi
+        ;;
+    *)
+        # Capable board (Pi 4, etc.) — upgrade to the latest build, best effort.
+        CF_URL="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}"
+        CF_TMP=/tmp/cloudflared.new
+        if curl -fsSL --max-time 180 "$CF_URL" -o "$CF_TMP" && cf_valid "$CF_TMP"; then
+            install -m 0755 "$CF_TMP" "$CF_BIN"
+            echo "      Upgraded cloudflared to the latest build for ${PI_MODEL:-this board}."
+        elif cf_valid "$CF_BIN"; then
+            echo "      Could not fetch latest — keeping baked cloudflared 2025.2.0."
+        else
+            echo "      WARNING: cloudflared unavailable — web access can be set up later."
+        fi
+        rm -f "$CF_TMP"
+        ;;
+esac
 
 # ── Service user ──────────────────────────────────────────────────────────────
 echo "[5/8] Creating service user..."

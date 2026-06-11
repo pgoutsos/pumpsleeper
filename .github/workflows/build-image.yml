@@ -35,12 +35,22 @@ jobs:
       - name: Decompress image
         run: xz -d base.img.xz && mv base.img pumpsleeper.img
 
-      - name: Mount image partitions
+      - name: Grow image and mount partitions
         run: |
+          # The Lite image's rootfs is nearly full; add room for the baked
+          # dependencies, then grow partition 2 + its filesystem to fill it.
+          # (The Pi still auto-resizes the rootfs to the full SD on first boot.)
+          sudo apt-get install -y cloud-guest-utils   # provides growpart
+          truncate -s +2G pumpsleeper.img
           sudo losetup -f --show -P pumpsleeper.img > /tmp/loopdev
           LOOPDEV=$(cat /tmp/loopdev)
           echo "LOOPDEV=$LOOPDEV" >> $GITHUB_ENV
           sleep 2
+          sudo growpart "$LOOPDEV" 2
+          sudo partprobe "$LOOPDEV" || true
+          sleep 2
+          sudo e2fsck -fy "${LOOPDEV}p2" || true
+          sudo resize2fs "${LOOPDEV}p2"
           sudo mkdir -p /mnt/boot /mnt/root
           sudo mount "${LOOPDEV}p1" /mnt/boot
           sudo mount "${LOOPDEV}p2" /mnt/root
@@ -93,6 +103,48 @@ jobs:
           sudo cp image/pumpsleeper.conf /mnt/boot/pumpsleeper.conf
           sudo cp image/PUMPSLEEPER-SETUP.txt /mnt/boot/PUMPSLEEPER-SETUP.txt
           sudo cp image/PUMPSLEEPER-QUICKSTART.txt /mnt/boot/PUMPSLEEPER-QUICKSTART.txt
+
+      - name: Bake dependencies into image (arm64 chroot)
+        run: |
+          set -e
+          # Register qemu so we can run arm64 binaries (apt/dpkg) inside the image.
+          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+          sudo apt-get install -y qemu-user-static
+          sudo cp /usr/bin/qemu-aarch64-static /mnt/root/usr/bin/
+
+          # Don't let apt start daemons inside the chroot, and give it DNS.
+          printf '#!/bin/sh\nexit 101\n' | sudo tee /mnt/root/usr/sbin/policy-rc.d > /dev/null
+          sudo chmod +x /mnt/root/usr/sbin/policy-rc.d
+          sudo cp /etc/resolv.conf /mnt/root/etc/resolv.conf
+          for d in proc sys dev dev/pts; do sudo mount --bind "/$d" "/mnt/root/$d"; done
+
+          # Install the runtime dependencies that firstboot used to apt-install
+          # on-device (the slow, OOM-prone step on the Zero 2 W). --no-install-
+          # recommends keeps the image lean.
+          sudo chroot /mnt/root /bin/bash -e -c '
+            export DEBIAN_FRONTEND=noninteractive
+            echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
+            echo iptables-persistent iptables-persistent/autosave_v6 boolean false | debconf-set-selections
+            apt-get update -qq
+            apt-get install -y --no-install-recommends \
+              network-manager iptables iptables-persistent tcpdump \
+              python3-flask python3-waitress python3-requests python3-paho-mqtt
+            python3 -c "import flask, waitress, requests, paho.mqtt.client"
+            apt-get clean
+            rm -rf /var/lib/apt/lists/*
+          '
+
+          # Bake cloudflared (2025.2.0 runs on the Zero 2 W and the Pi 4).
+          sudo curl -fsSL --max-time 300 \
+            "https://github.com/cloudflare/cloudflared/releases/download/2025.2.0/cloudflared-linux-arm64" \
+            -o /mnt/root/usr/local/bin/cloudflared
+          sudo chmod +x /mnt/root/usr/local/bin/cloudflared
+          echo "cloudflared size: $(sudo stat -c%s /mnt/root/usr/local/bin/cloudflared) bytes"
+
+          # Cleanup chroot scaffolding.
+          sudo rm -f /mnt/root/usr/sbin/policy-rc.d
+          for d in dev/pts dev sys proc; do sudo umount "/mnt/root/$d" || true; done
+          sudo rm -f /mnt/root/usr/bin/qemu-aarch64-static
 
       - name: Unmount image
         run: |
