@@ -14,10 +14,31 @@ Endpoints handled:
   POST /oauth/token                  — token refresh (every ~2 hours)
   GET  /tm                           — UTC time sync
   POST /pings                        — RSSI / battery heartbeat (~2 min)
-  POST /bbs_json                     — pump event data
-  POST /pump_outlet_alerts           — main pump current events
-  GET  /bbs_parameters/<deviceid>    — device config fetch
+  POST /bbs_json                     — pump event data            (BBS device)
+  POST /pump_outlet_alerts           — main pump current events   (BBS device)
+  GET  /bbs_parameters/<deviceid>    — device config fetch        (BBS device)
+  GET  /rht_parameters/<deviceid>    — device config fetch        (SO1000 smart outlet)
+  POST /rht_outlet_cycles            — pump-run reports           (SO1000 smart outlet)
   GET  /new_firmware/<deviceid>      — OTA check
+
+Device types (user-selected in dashboard Settings, db key 'device_type'):
+  'bbs'    — the original PumpSpy backup pump system (ESP32). Default.
+  'so1000' — the PumpSpy smart outlet. Same /pings + /oauth/token + /new_firmware,
+             but config comes from /rht_parameters and pump runs arrive as
+             POST /rht_outlet_cycles. The SO1000-specific endpoints answer
+             locally ONLY when 'so1000' is selected; otherwise they fall through
+             to the catch-all (record + forward) so BBS behavior is untouched.
+
+SO1000 firmware quirks (decoded from a bypass capture against the real cloud,
+2026-06-12 — see memory/pumpsleeper-so1000-investigation.md):
+  * GET /rht_parameters declares Content-Length: 148 but NEVER sends a body.
+    The real server ignores the CL and answers in ~25 ms. We must do the same —
+    NEVER attempt to read the request body on this route, or werkzeug blocks
+    until the device gives up (10 s) and the device never gets its config.
+    Without the config (cycle_data:1) the device won't report pump runs AT ALL.
+  * The request line is "POST  /rht_outlet_cycles" (two spaces). werkzeug's
+    parser collapses whitespace, so routing works — don't switch to a WSGI
+    server that parses the request line more strictly without re-testing.
 
 Environment variables:
   PUMPSPY_DATA         Directory where pumpspy.db is stored (default: same dir as script)
@@ -34,7 +55,7 @@ from flask import Flask, request, jsonify, Response
 import requests as rlib
 from db import (init_db, record, get_mode, set_device_ip, get_device_ip,
                 set_hotspot_connected, is_capture_enabled, set_capture_enabled,
-                CAPTURE_FILE)
+                get_device_type, CAPTURE_FILE)
 import mqtt
 import notifications as notif
 
@@ -261,7 +282,13 @@ def _capture_traffic(resp):
             return resp
         ts = datetime.now(timezone.utc).isoformat()
         try:
-            req_body = request.get_data().decode("utf-8", "replace")
+            # GETs: never trigger a body read here. The SO1000 declares a
+            # Content-Length on GET /rht_parameters but sends no body; reading
+            # it would block until the device gives up (~10 s).
+            if request.method == "GET":
+                req_body = ""
+            else:
+                req_body = request.get_data().decode("utf-8", "replace")
         except Exception:
             req_body = "<unavailable>"
         try:
@@ -326,14 +353,23 @@ def proxy_forward():
     # If the handler already accessed request.form or request.get_json(), the WSGI
     # stream may be consumed. Fall back to reconstructing from the parsed data so
     # the forwarded body is never empty.
-    body_data = request.get_data()
-    ct = (request.content_type or '').lower()
-    if not body_data:
-        if 'application/x-www-form-urlencoded' in ct and request.form:
-            from urllib.parse import urlencode
-            body_data = urlencode(list(request.form.items(multi=True))).encode('utf-8')
-        elif 'application/json' in ct and request.json is not None:
-            body_data = json.dumps(request.json).encode('utf-8')
+    # The device sometimes sends a malformed GET declaring a Content-Length
+    # (e.g. 148) with no body (seen on /rht_parameters from the SO1000 smart
+    # outlet); werkzeug raises a 400 on the short read — treat that as empty
+    # so the request is still forwarded upstream.
+    try:
+        body_data = request.get_data()
+        ct = (request.content_type or '').lower()
+        if not body_data:
+            if 'application/x-www-form-urlencoded' in ct and request.form:
+                from urllib.parse import urlencode
+                body_data = urlencode(list(request.form.items(multi=True))).encode('utf-8')
+            elif 'application/json' in ct and request.json is not None:
+                body_data = json.dumps(request.json).encode('utf-8')
+    except Exception:
+        log.warning(f"BODY   {request.method} {request.path}: declared Content-Length "
+                    f"{request.headers.get('Content-Length')} but body unreadable — forwarding without body")
+        body_data = b""
 
     try:
         resp = _proxy_session.request(
@@ -558,6 +594,15 @@ def pump_outlet_alerts():
             else:
                 log.info(f"MAIN   pump=OFF  device_time={ts}")
             mqtt.publish_main_pump_running(bool(value))
+        elif alert_type == 1004:
+            # SO1000 smart outlet high-water sensor (verified live 2026-06-13):
+            # value 1 = triggered, 0 = cleared. The BBS reports high water via
+            # /bbs_json instead and never sends this type, so no gating needed.
+            state = "TRIGGERED" if value else "CLEARED"
+            log.warning(f"ALERT  high_water {state} (SO1000)  device_time={ts}")
+            mqtt.publish_water_sensor("high_water", bool(value))
+            if value:
+                notif.notify(notif.EVENT_HIGH_WATER, "High water sensor triggered.")
         else:
             state = "ON" if value else "OFF"
             log.warning(f"ALERT  type={alert_type}  state={state}  value={value}  device_time={ts}")
@@ -589,6 +634,98 @@ def bbs_parameters(device_id):
     record("params_fetch", {"deviceid": device_id})
     # Real server returns 400 for this endpoint when proxied — always answer locally.
     return jsonify(DEVICE_PARAMS), 200
+
+
+# ---------------------------------------------------------------------------
+# SO1000 smart outlet endpoints — active only when device_type == 'so1000'
+# ---------------------------------------------------------------------------
+# Config the real cloud returned for Perry's SO1000 (bypass capture 2026-06-12).
+# cycle_data:1 is the critical flag — without it the outlet never reports runs.
+RHT_PARAMETERS = {
+    "id_rht_parameters":   13012,
+    "deviceid":            None,    # filled in per request
+    "ping_interval":       120,
+    "send_rht":            0,
+    "cycle_data":          1,
+    "high_temp":           99,
+    "low_temp":            1,
+    "high_humid":          99,
+    "low_humid":           1,
+    "temp_post_timer":     900000,
+    "motor_current_limit": 14000,
+    "motor_run_timeout":   300000,
+}
+
+
+@app.route("/rht_parameters/<int:device_id>", methods=["GET"])
+def rht_parameters(device_id):
+    """
+    SO1000 config poll (every ~2 min). The device declares Content-Length: 148
+    but never sends a body — do NOT read request data anywhere in this handler
+    (it would block ~10 s and the device would close the connection unconfigured).
+    The real server ignores the bogus CL and answers immediately; we answer
+    locally in both modes (mirrors /bbs_parameters and /new_firmware precedent —
+    latency-sensitive, and answering locally guarantees cycle_data stays 1).
+    """
+    if get_device_type() != "so1000":
+        return _catch(f"rht_parameters/{device_id}", f"rht_parameters/{device_id}")
+    log.info(f"PARAMS (SO1000) requested by device {device_id}")
+    record("params_fetch", {"deviceid": device_id, "device_type": "so1000"})
+    params = dict(RHT_PARAMETERS, deviceid=device_id)
+    return jsonify(params), 200
+
+
+@app.route("/rht_outlet_cycles", methods=["POST"])
+def rht_outlet_cycles():
+    """
+    SO1000 pump-run report. JSON array body, e.g.:
+      [{"deviceID": ..., "recordNumber": 0, "utcunixTime": 1781310395000,
+        "cycleDuration": 25071, "cycleCurrent": 8603}]
+    cycleDuration is ms, cycleCurrent is mA. Sent ~35 s after the physical run.
+    Answer locally + forward to pumpspy.com in the background (same pattern as
+    /pings and /pump_outlet_alerts) so their app stays in sync.
+    """
+    if get_device_type() != "so1000":
+        return _catch("rht_outlet_cycles", "rht_outlet_cycles")
+
+    body = request.get_json(force=True, silent=True) or []
+    if not isinstance(body, list):
+        body = [body]
+
+    for cycle in body:
+        ts_ms  = cycle.get("utcunixTime", 0)
+        dur_s  = round(cycle.get("cycleDuration", 0) / 1000, 2)
+        amps   = cycle.get("cycleCurrent", 0) / 1000
+        ts = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%H:%M:%S")
+        log.info(f"MAIN   ran (SO1000)  duration={dur_s}s  current={amps:.2f}A  device_time={ts}")
+        record("rht_outlet_cycle", cycle)
+
+        # Publish to MQTT + notify, mirroring the BBS main-pump path.
+        iso_ts = (datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).isoformat()
+                  if ts_ms else datetime.now(timezone.utc).isoformat())
+        gal = round(dur_s / 1.02, 1) if dur_s else 0   # same flow estimate as BBS (ticks/10.2)
+        mqtt.publish_main_pump_run(iso_ts, dur_s, gal, amps)
+        notif.notify(notif.EVENT_MAIN_PUMP,
+                     f"Duration: {dur_s}s · Est. {gal} gal · {amps:.2f}A")
+
+    _fire_and_forget(request.method, request.path,
+                     request.headers, request.get_data(), request.query_string)
+
+    # Local response mirrors the real server's enriched-record shape.
+    response = []
+    for cycle in body:
+        response.append({
+            "idPumpOutletCycleData": None,
+            "date_time":     None, "year_num":      None, "month_num": None,
+            "week_num":      None, "day_num":       None, "total_count": None,
+            "total_average": None, "gallons":       None,
+            "cycleCurrent":  cycle.get("cycleCurrent"),
+            "cycleDuration": cycle.get("cycleDuration"),
+            "deviceID":      cycle.get("deviceID"),
+            "utcunixTime":   cycle.get("utcunixTime"),
+            "recordNumber":  cycle.get("recordNumber", 0),
+        })
+    return jsonify(response), 200
 
 
 @app.route("/new_firmware/<int:device_id>", methods=["GET"])
@@ -639,7 +776,13 @@ def catch_all(path):
     return _catch(path, path)
 
 def _catch(log_path, record_path):
-    body = request.get_data(as_text=True)
+    try:
+        body = request.get_data(as_text=True)
+    except Exception:
+        # Malformed device GET: Content-Length declared but no body sent.
+        # Without this, werkzeug 400s here and the request is never recorded
+        # or forwarded (seen on /rht_parameters from the SO1000 smart outlet).
+        body = ""
     log.warning(f"UNKNOWN  {request.method} /{log_path}  body={body[:200]}")
     record("unknown", {"method": request.method, "path": record_path, "body": body})
 

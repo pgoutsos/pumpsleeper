@@ -4,9 +4,10 @@ A local proxy and dashboard for **PumpSpy** sump pump monitors. PumpSleeper sits
 
 ## Features
 
+- **Two PumpSpy devices supported** — the **battery backup system** (BBS) and the **SO1000 smart outlet**; pick yours in Settings → PumpSpy Device. Pump runs, alerts, and (on the smart outlet) water-sensor status are all captured. One connected device at a time
 - **Transparent proxy** — your device keeps talking to pumpspy.com normally while you get a local copy of every event
 - **Takeover mode** — answer the device locally when the pumpspy.com cloud is unreachable
-- **Local dashboard** — an at-a-glance view of today's pump activity (main/backup runs, gallons, operating status), full pump run history, and signal-strength + battery trends
+- **Local dashboard** — an at-a-glance view of today's pump activity (main/backup runs, gallons, operating status), full pump run history, and signal-strength + battery trends; with the smart outlet selected, a live water-sensor status (Dry / HIGH) replaces the backup-pump stats
 - **Secure login** — the dashboard requires a single-user sign-in (default `admin` / `admin`, which you're prompted to change), with a "Forgot password?" flow that sends a reset link to your notification channels
 - **Remote web access** — expose the dashboard over the internet through a Cloudflare tunnel: a zero-config quick tunnel (no account) or your own named tunnel for a stable address on your domain. The current URL is shown in Settings and pushed to your notifications
 - **Notifications** — email (SMTP) and ntfy push for backup/main pump runs, high-water alerts, device offline, and update events; each notification includes a tap-through link to the dashboard. Settings save automatically — no Save button
@@ -95,6 +96,8 @@ The Pi also advertises itself over mDNS, so on most networks you can reach it by
 
 Connect the PumpSpy device to the hotspot SSID you configured. It will appear in the dashboard within a few minutes.
 
+If your device is the **PumpSpy SO1000 smart outlet** (rather than the battery backup system), open **Settings → PumpSpy Device** and select it — the two products report pump activity differently. The default is the battery backup system.
+
 **Default SSH credentials:** username `pumpsleeper`, password `pumpspy` (or whatever you set as `SSH_PASS`)
 
 ---
@@ -121,7 +124,7 @@ The installer will prompt you for:
 - Hotspot SSID and password
 - Optional MQTT broker details for Home Assistant
 
-After installation, connect your PumpSpy device to the hotspot you configured. It will appear in the dashboard within a few minutes.
+After installation, connect your PumpSpy device to the hotspot you configured. It will appear in the dashboard within a few minutes. If you have the SO1000 smart outlet, select it in **Settings → PumpSpy Device**.
 
 ---
 

@@ -225,6 +225,25 @@ def set_capture_enabled(enabled: bool):
 
 
 # ---------------------------------------------------------------------------
+# Installed PumpSpy device type — user-selected in dashboard Settings.
+#   'bbs'    = PumpSpy backup pump system (the original ESP32 BBS device)
+#   'so1000' = PumpSpy smart outlet (different protocol: /rht_parameters config
+#              poll + POST /rht_outlet_cycles pump-run reports)
+# Only ONE device is supported at a time (design decision, no auto-detection).
+# ---------------------------------------------------------------------------
+VALID_DEVICE_TYPES = ("bbs", "so1000")
+
+def get_device_type() -> str:
+    val = _get_setting("device_type", "bbs")
+    return val if val in VALID_DEVICE_TYPES else "bbs"
+
+def set_device_type(device_type: str):
+    if device_type not in VALID_DEVICE_TYPES:
+        raise ValueError(f"Unknown device type {device_type!r}. Valid: {VALID_DEVICE_TYPES}")
+    _set_setting("device_type", device_type)
+
+
+# ---------------------------------------------------------------------------
 # Authentication + web-access gate
 # ---------------------------------------------------------------------------
 # A single dashboard user. Credentials start at the factory default admin/admin;
@@ -426,7 +445,7 @@ _RESTORABLE_KEYS = {
     "mode",
     "auth_username", "auth_password_hash", "auth_creds_changed", "flask_secret_key",
     "web_access", "tunnel_mode", "cf_tunnel_token", "cf_tunnel_hostname",
-    "auto_update", "backup_email_enabled",
+    "auto_update", "backup_email_enabled", "device_type",
 }
 _RESTORABLE_PREFIXES = ("notif_", "ui_theme_")
 

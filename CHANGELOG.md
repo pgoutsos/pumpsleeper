@@ -4,7 +4,15 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
-## [v4.0] — 2026-06-11
+## [v4.1] — 2026-06-13
+
+### New
+- **PumpSpy SO1000 smart outlet support.** PumpSleeper now fully supports the PumpSpy smart outlet alongside the original backup pump system. Pump runs (`POST /rht_outlet_cycles` — duration and motor current), the water sensor (alert type 1004, trigger and clear), and the config poll (`GET /rht_parameters`) are all parsed, logged to the dashboard, published to MQTT/Home Assistant, and forwarded to pumpspy.com in proxy mode so the official app stays in sync. Works in both proxy and takeover modes.
+- **Device selector in Settings.** A new "PumpSpy Device" card lets you pick which device is connected: *PumpSpy backup pump system* (default) or *PumpSpy smart outlet*. The smart-outlet endpoints answer locally only when selected; backup-pump behavior is completely unchanged. The choice is included in settings backups.
+- **Water Sensor status on the dashboard.** With the smart outlet selected, the "Backup Runs" stat (not applicable to the outlet) is replaced by a live Water Sensor status — green *Dry* / red *HIGH* with the time of the last change. A water-sensor trigger also fires the existing high-water notification (email/ntfy) and MQTT state.
+
+### Fixed
+- **Smart outlet was blocked from reporting anything while proxied.** The SO1000 declares a `Content-Length` on its config poll but never sends a body (firmware quirk); the proxy waited for the phantom body and answered `400` every cycle, so the device never received its configuration (`cycle_data: 1`) and never reported pump runs — to PumpSleeper *or* to pumpspy.com. The config poll is now answered instantly without touching the request body, exactly like the real server does (verified against a packet capture of the device talking directly to the PumpSpy cloud).
 
 ### Changed
 - **Dependencies are now baked into the image — first boot is "flash and go."** The build pipeline installs the Python/iptables/tcpdump/NetworkManager packages and cloudflared into the image at build time (arm64 chroot), so first boot no longer runs `apt`, downloads nothing heavy, and skips the long memory-intensive install that destabilized the Pi Zero 2 W. This removes the whole class of first-boot problems at once (the OOM/reset loop, the clock→apt-signature failures, the 3–5 minute install). First boot now just applies your config (hotspot, Wi-Fi country, password), brings up the hotspot, and starts — in seconds. Confirmed on real hardware.

@@ -16,7 +16,8 @@ import requests as rlib
 from datetime import datetime, timezone, timedelta
 from flask import (Flask, jsonify, request, render_template_string, make_response,
                    session, redirect, url_for)
-from db import load_events, init_db, get_mode_switched_ts, get_device_ip, get_hotspot_connected
+from db import (load_events, init_db, get_mode_switched_ts, get_device_ip,
+                get_hotspot_connected, get_device_type)
 
 SERVER_URL    = os.environ.get("PUMPSPY_SERVER_URL", "http://127.0.0.1:8081")
 HOTSPOT_CON   = os.environ.get("PUMPSLEEPER_HOTSPOT_CON", "Hotspot")
@@ -93,6 +94,7 @@ def compute_data(events, tz_offset_minutes: int = 0,
     now = datetime.now(timezone.utc)
 
     rssi_pings, batt_pings, outlet_alerts, backup_runs, main_bbs_runs, faults, alerts, unknowns, triggers = [], [], [], [], [], [], [], [], []
+    water_sensor = None   # latest SO1000 water-sensor state (type-1004 alert), or None if never reported
 
     for e in events:
         kind = e.get("kind")
@@ -122,11 +124,12 @@ def compute_data(events, tz_offset_minutes: int = 0,
             else:
                 # Other alert types: high_water, ac_power_loss, excessive_current, etc.
                 ALERT_NAMES = {
-                    101: "high_water",
-                    102: "ac_power_loss",
-                    103: "excessive_current",
-                    104: "excessive_run_time",
-                    106: "pump_failure",
+                    101:  "high_water",
+                    102:  "ac_power_loss",
+                    103:  "excessive_current",
+                    104:  "excessive_run_time",
+                    106:  "pump_failure",
+                    1004: "high_water",   # SO1000 smart outlet (1=triggered, 0=cleared)
                 }
                 name = ALERT_NAMES.get(alert_type, f"alert_type_{alert_type}")
                 alerts.append({
@@ -136,6 +139,10 @@ def compute_data(events, tz_offset_minutes: int = 0,
                     "state": "ON" if value else "OFF",
                     "value": value,
                 })
+                # SO1000 water sensor — events are chronological, so this ends
+                # up holding the latest known state.
+                if alert_type == 1004:
+                    water_sensor = {"active": bool(value), "ts": ts}
 
         elif kind == "bbs_json":
             # Backup pump events
@@ -174,6 +181,32 @@ def compute_data(events, tz_offset_minutes: int = 0,
                     main_bbs_runs.append(run)
                 else:
                     backup_runs.append(run)
+
+        elif kind == "rht_outlet_cycle":
+            # SO1000 smart outlet pump-run report (POST /rht_outlet_cycles).
+            # cycleDuration is ms, cycleCurrent is mA. The device timestamps the
+            # run itself (utcunixTime, ms) — more accurate than our receive time
+            # (reports arrive ~35 s after the run), so prefer it for "ts".
+            dur_ms = data.get("cycleDuration")
+            mamp   = data.get("cycleCurrent", 0) or 0
+            ts_ms  = data.get("utcunixTime")
+            run_ts = ts
+            if ts_ms:
+                try:
+                    run_ts = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).isoformat()
+                except Exception:
+                    pass
+            duration_s = round(dur_ms / 1000, 1) if dur_ms is not None else None
+            main_bbs_runs.append({
+                "ts":        run_ts,
+                "motor":     "STOPPED",
+                "ticks":     None,
+                "duration":  duration_s,
+                "gallons":   round(duration_s / 1.02, 1) if duration_s else None,  # same flow estimate as BBS
+                "amps":      round(mamp / 1000, 2),
+                "battery_v": None,   # outlet has no backup battery
+                "loaded_v":  None,
+            })
 
         elif kind == "unknown":
             unknowns.append({
@@ -411,6 +444,8 @@ def compute_data(events, tz_offset_minutes: int = 0,
         "total_main_gallons_today":    total_main_gallons_today,
         "total_backup_gallons_today":  total_backup_gallons_today,
         "op_status":           op_status,
+        "device_type":         get_device_type(),
+        "water_sensor":        water_sensor,
         "rssi_history":        rssi_history,
         "pump_runs":           filtered_runs[:200],
         "unknowns":            list(reversed(unknowns[-50:])),
@@ -646,10 +681,16 @@ TEMPLATE = """<!DOCTYPE html>
         <div id="s-main-runs" style="font-size:40px;font-weight:700;line-height:1">—</div>
         <div class="stat-sub" id="s-main-runtime" style="margin-top:0;line-height:1.5">—</div>
       </div>
-      <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:14px;display:flex;flex-direction:column;justify-content:center;gap:8px">
+      <div id="stat-backup-box" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:14px;display:flex;flex-direction:column;justify-content:center;gap:8px">
         <div class="stat-label" style="margin-bottom:0">Backup Runs</div>
         <div id="s-backup-runs" style="font-size:40px;font-weight:700;line-height:1">—</div>
         <div class="stat-sub" id="s-backup-runtime" style="margin-top:0;line-height:1.5">—</div>
+      </div>
+      <!-- Water Sensor replaces Backup Runs when the SO1000 smart outlet is selected -->
+      <div id="stat-water-box" style="display:none;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:14px;flex-direction:column;justify-content:center;gap:8px">
+        <div class="stat-label" style="margin-bottom:0">Water Sensor</div>
+        <div id="s-water-state" style="font-size:34px;font-weight:700;line-height:1">—</div>
+        <div class="stat-sub" id="s-water-sub" style="margin-top:0;line-height:1.5">—</div>
       </div>
       <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:14px;display:flex;flex-direction:column;justify-content:center;gap:8px">
         <div class="stat-label" style="margin-bottom:0">Total Today</div>
@@ -763,6 +804,26 @@ TEMPLATE = """<!DOCTYPE html>
 <!-- Settings tab -->
 <div id="tab-settings" class="tab-panel">
 <div class="settings-grid">
+
+  <!-- ── PumpSpy Device ───────────────────────────────────────────── -->
+  <div class="card full-width" id="device-card">
+    <div class="section-title">PumpSpy Device</div>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-top:6px">
+      <label class="toggle-label" style="gap:8px;align-items:flex-start">
+        <input type="radio" name="device_type" value="bbs" onchange="saveDeviceType(this.value)" style="margin-top:3px">
+        <span>PumpSpy backup pump system <span style="color:var(--muted);font-weight:400">&mdash; battery backup sump pump monitor (BBS)</span></span>
+      </label>
+      <label class="toggle-label" style="gap:8px;align-items:flex-start">
+        <input type="radio" name="device_type" value="so1000" onchange="saveDeviceType(this.value)" style="margin-top:3px">
+        <span>PumpSpy smart outlet <span style="color:var(--muted);font-weight:400">&mdash; SO1000 pump monitoring outlet</span></span>
+      </label>
+      <div style="font-size:11px;color:var(--muted);line-height:1.5">
+        Select which PumpSpy device is connected to the hotspot. The two products report
+        pump activity differently; PumpSleeper supports one connected device at a time.
+        <span class="settings-msg" id="device-type-msg" style="margin-top:0"></span>
+      </div>
+    </div>
+  </div>
 
   <!-- ── Appearance ───────────────────────────────────────────────── -->
   <div class="card full-width" id="appearance-card">
@@ -1290,6 +1351,34 @@ function update(d) {
   document.getElementById('s-backup-runtime').innerHTML =
     runDetail(d.total_backup_runtime_today, d.total_backup_gallons_today);
 
+  // SO1000 smart outlet: swap the Backup Runs box for Water Sensor status
+  const backupBox = document.getElementById('stat-backup-box');
+  const waterBox  = document.getElementById('stat-water-box');
+  if (backupBox && waterBox) {
+    if (d.device_type === 'so1000') {
+      backupBox.style.display = 'none';
+      waterBox.style.display  = 'flex';
+      const st  = document.getElementById('s-water-state');
+      const sub = document.getElementById('s-water-sub');
+      if (!d.water_sensor) {
+        st.textContent  = '—';
+        st.style.color  = 'var(--text)';
+        sub.textContent = 'No reports yet';
+      } else if (d.water_sensor.active) {
+        st.textContent  = 'HIGH';
+        st.style.color  = 'var(--red)';
+        sub.textContent = 'Triggered ' + fmtAgo(d.water_sensor.ts);
+      } else {
+        st.textContent  = 'Dry';
+        st.style.color  = 'var(--green)';
+        sub.textContent = 'Cleared ' + fmtAgo(d.water_sensor.ts);
+      }
+    } else {
+      backupBox.style.display = 'flex';
+      waterBox.style.display  = 'none';
+    }
+  }
+
   // Total gallons today (main + backup)
   const mainGal = d.total_main_gallons_today   || 0;
   const bkupGal = d.total_backup_gallons_today || 0;
@@ -1590,7 +1679,7 @@ function showTab(name) {
   document.querySelectorAll('.tab-btn').forEach(b => {
     if ((b.getAttribute('onclick') || '').indexOf("'" + name + "'") !== -1) b.classList.add('active');
   });
-  if (name === 'settings') { loadSettings(); loadUpdateInfo(); loadTheme(); loadSecurity(); loadBackup(); }
+  if (name === 'settings') { loadSettings(); loadUpdateInfo(); loadTheme(); loadSecurity(); loadBackup(); loadDeviceType(); }
 }
 
 function showSubTab(name) {
@@ -1602,6 +1691,35 @@ function showSubTab(name) {
     if ((b.getAttribute('onclick') || '').indexOf("'" + name + "'") !== -1) b.classList.add('active');
   });
   if (name === 'signal' && rssiChart) rssiChart.resize();
+}
+
+// ── Installed PumpSpy device type (bbs | so1000) ──────────────────────────
+async function loadDeviceType() {
+  try {
+    const r = await fetch('/api/settings/device-type');
+    const d = await r.json();
+    const el = document.querySelector('input[name="device_type"][value="' + (d.device_type || 'bbs') + '"]');
+    if (el) el.checked = true;
+  } catch(e) {}
+}
+async function saveDeviceType(val) {
+  const msg = document.getElementById('device-type-msg');
+  try {
+    const r = await fetch('/api/settings/device-type', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({device_type: val})
+    });
+    const d = await r.json();
+    if (msg) {
+      msg.textContent = d.error ? d.error : 'Saved.';
+      msg.className = 'settings-msg' + (d.error ? ' err' : ' ok');
+      setTimeout(() => { msg.textContent = ''; }, 3000);
+    }
+    if (d.error) loadDeviceType();   // revert the radio on failure
+  } catch(e) {
+    if (msg) { msg.textContent = 'Save failed.'; msg.className = 'settings-msg err'; }
+    loadDeviceType();
+  }
 }
 
 // ── Debug: download service logs ──────────────────────────────────────────
@@ -2647,6 +2765,22 @@ def api_theme_set():
         return jsonify({"ok": False, "error": str(exc)}), 400
     return jsonify({"ok": True, "theme": theme, "layout": layout})
 
+@app.route("/api/settings/device-type", methods=["GET"])
+def api_device_type_get():
+    from db import get_device_type
+    return jsonify({"device_type": get_device_type()})
+
+@app.route("/api/settings/device-type", methods=["POST"])
+def api_device_type_set():
+    from db import set_device_type
+    data = request.get_json(force=True, silent=True) or {}
+    dtype = data.get("device_type", "")
+    try:
+        set_device_type(dtype)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "device_type": dtype})
+
 @app.route("/api/settings/notifications", methods=["GET"])
 def api_settings_get():
     from notifications import get_settings
@@ -2716,20 +2850,31 @@ def api_debug_log():
 # of ALL the device's traffic so we can spot pump events sent on other ports.
 def _netcapture_start():
     """Start the root tcpdump via the sudo wrapper. Returns (ok, message);
-    degrades gracefully if tcpdump / the wrapper aren't installed."""
+    degrades gracefully if tcpdump / the wrapper aren't installed.
+
+    Captures ALL hotspot traffic ("all"), not just the last-seen device IP —
+    with more than one PumpSpy device connected (e.g. a BBS plus an SO1000
+    smart outlet) the single-IP filter could pin the wrong unit. Falls back
+    to the last-seen device IP on installs whose wrapper predates "all"."""
     from db import CAPTURE_PCAP
-    dev_ip = get_device_ip()
-    if not dev_ip:
-        return False, "device not seen on the hotspot yet"
     if not os.path.exists(NETCAPTURE_BIN):
         return False, "network capture not available on this install"
     try:
         r = subprocess.run(
-            ["sudo", "-n", NETCAPTURE_BIN, "start", WIFI_IFACE, dev_ip, CAPTURE_PCAP],
+            ["sudo", "-n", NETCAPTURE_BIN, "start", WIFI_IFACE, "all", CAPTURE_PCAP],
             capture_output=True, text=True, timeout=15,
         )
         if r.returncode != 0:
-            return False, (r.stderr or "tcpdump failed to start").strip()
+            dev_ip = get_device_ip()
+            if not dev_ip:
+                return False, (r.stderr or "tcpdump failed to start").strip()
+            r = subprocess.run(
+                ["sudo", "-n", NETCAPTURE_BIN, "start", WIFI_IFACE, dev_ip, CAPTURE_PCAP],
+                capture_output=True, text=True, timeout=15,
+            )
+            if r.returncode != 0:
+                return False, (r.stderr or "tcpdump failed to start").strip()
+            return True, f"ok (single device {dev_ip} — old capture helper)"
         return True, "ok"
     except Exception as exc:
         return False, str(exc)
@@ -2747,8 +2892,12 @@ def _netcapture_stop():
     except Exception as exc:
         app.logger.warning(f"netcapture stop failed: {exc}")
 
+HOTSPOT_GW = os.environ.get("PUMPSPY_HOTSPOT_IP", "192.168.50.1")   # Pi's hotspot address
+
 def _netcapture_summary(pcap_path: str) -> str:
-    """Summarise the destinations/ports the device talked to, from the pcap."""
+    """Summarise, per hotspot device, the destinations it talked to.
+    Only counts packets the device SENT (src = device), so the device's own
+    ephemeral source ports never show up as fake 'destinations'."""
     try:
         r = subprocess.run(["tcpdump", "-nn", "-q", "-r", pcap_path],
                            capture_output=True, text=True, timeout=30)
@@ -2756,25 +2905,38 @@ def _netcapture_summary(pcap_path: str) -> str:
     except Exception as exc:
         return f"(Could not read the capture: {exc})\n"
     import collections
-    dests = collections.Counter()
+    subnet = HOTSPOT_GW.rsplit(".", 1)[0] + "."          # e.g. "192.168.50."
+    per_dev = collections.defaultdict(collections.Counter)
+    pat = re.compile(r"IP (\d{1,3}(?:\.\d{1,3}){3})\.(\d+) > "
+                     r"(\d{1,3}(?:\.\d{1,3}){3})\.(\d+):\s*(\w+)")
     for line in out.splitlines():
-        m = re.search(r"> (\d{1,3}(?:\.\d{1,3}){3})\.(\d+):", line)
-        if m:
-            dests[(m.group(1), int(m.group(2)))] += 1
+        m = pat.search(line)
+        if not m:
+            continue
+        src, dst, dport, proto = m.group(1), m.group(3), int(m.group(4)), m.group(5)
+        if src.startswith(subnet) and src != HOTSPOT_GW:
+            per_dev[src][(dst, dport, proto.upper())] += 1
+    last_seen = get_device_ip()
     lines = ["PumpSleeper network-capture summary",
              f"Generated: {datetime.now().isoformat()}",
              "",
-             "Destinations the device connected to (host:port  packets):",
+             "Traffic sent by each device on the hotspot (dest host:port  packets):",
              "=" * 60]
-    if dests:
-        for (h, p), c in dests.most_common():
-            note = "   <- PumpSleeper proxy (intercepted)" if p == 8081 else ""
-            lines.append(f"  {h}:{p}    {c}{note}")
+    if per_dev:
+        for dev in sorted(per_dev):
+            tag = "   <- last device the proxy heard from" if dev == last_seen else ""
+            lines.append(f"\nDevice {dev}{tag}")
+            for (h, p, proto), c in per_dev[dev].most_common():
+                note = ""
+                if p == 8081:  note = "   <- PumpSleeper proxy (intercepted)"
+                elif p == 53:  note = "   <- DNS lookup"
+                elif p == 443: note = "   <- HTTPS (encrypted, NOT intercepted)"
+                lines.append(f"  {h}:{p} {proto.lower()}    {c}{note}")
     else:
-        lines.append("  (no TCP destinations seen)")
+        lines.append("  (no device traffic seen)")
     lines += ["",
               "Ports other than 8081 are traffic PumpSleeper does NOT intercept —",
-              "that's where to look for this device's pump-run events."]
+              "that's where to look for pump-run events the dashboard never shows."]
     return "\n".join(lines) + "\n"
 
 
