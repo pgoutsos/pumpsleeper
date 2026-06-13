@@ -4,7 +4,7 @@ PumpSpy local server — transparent proxy + local logger
 Sits between the device and the real pumpspy.com cloud.
 
 Flow:
-  Device → (iptables DNAT) → Pi:8081 → [parse + record] → 206.80.104.221:8081
+  Device → (iptables DNAT) → Pi:8081 → [parse + record] → www.pumpspy.com:8081
   Real server response → Pi:8081 → Device
 
 The device talks to the real cloud normally; we intercept every request,
@@ -42,7 +42,7 @@ SO1000 firmware quirks (decoded from a bypass capture against the real cloud,
 
 Environment variables:
   PUMPSPY_DATA         Directory where pumpspy.db is stored (default: same dir as script)
-  PUMPSPY_REAL_SERVER  Real cloud URL (default: http://206.80.104.221:8081)
+  PUMPSPY_REAL_SERVER  Real cloud URL override (default: use device's Host header)
   PUMPSPY_PROXY        Set to "0" to disable forwarding and answer locally (default: "1")
   PUMPSPY_PROXY_TIMEOUT  Seconds to wait for real server (default: 8)
 """
@@ -84,7 +84,9 @@ def _fire_and_forget(method, path, headers, body, query_string):
         if not proxy_enabled():
             return
         try:
-            url = REAL_SERVER + path
+            host_hdr = dict(headers).get("Host", "www.pumpspy.com:8081")
+            real = REAL_SERVER or ("http://" + host_hdr.strip())
+            url = real + path
             if query_string:
                 url += '?' + query_string.decode('utf-8', errors='replace')
             skip = _HOP_BY_HOP | {'host', 'content-length'}
@@ -100,7 +102,7 @@ def _fire_and_forget(method, path, headers, body, query_string):
 # ---------------------------------------------------------------------------
 # Proxy config
 # ---------------------------------------------------------------------------
-REAL_SERVER   = os.environ.get("PUMPSPY_REAL_SERVER", "http://206.80.104.221:8081")
+REAL_SERVER   = os.environ.get("PUMPSPY_REAL_SERVER", "")  # empty = use device's Host header
 PROXY_TIMEOUT = int(os.environ.get("PUMPSPY_PROXY_TIMEOUT", "8"))
 WIFI_IFACE    = os.environ.get("PUMPSPY_WIFI_IFACE", "wlan0")   # hotspot interface
 
@@ -341,7 +343,11 @@ def proxy_forward():
     if not proxy_enabled():
         return None
 
-    url = REAL_SERVER + request.path
+    # Use configured server or fall back to the Host header the device sent.
+    # The device hardcodes an IP but always sends Host: www.pumpspy.com:8081,
+    # so using the Host header means we follow pumpspy.com even if their IP changes.
+    real = REAL_SERVER or ("http://" + request.headers.get("Host", "www.pumpspy.com:8081").strip())
+    url = real + request.path
     if request.query_string:
         url += '?' + request.query_string.decode('utf-8', errors='replace')
 
@@ -357,19 +363,24 @@ def proxy_forward():
     # (e.g. 148) with no body (seen on /rht_parameters from the SO1000 smart
     # outlet); werkzeug raises a 400 on the short read — treat that as empty
     # so the request is still forwarded upstream.
-    try:
-        body_data = request.get_data()
-        ct = (request.content_type or '').lower()
-        if not body_data:
-            if 'application/x-www-form-urlencoded' in ct and request.form:
-                from urllib.parse import urlencode
-                body_data = urlencode(list(request.form.items(multi=True))).encode('utf-8')
-            elif 'application/json' in ct and request.json is not None:
-                body_data = json.dumps(request.json).encode('utf-8')
-    except Exception:
-        log.warning(f"BODY   {request.method} {request.path}: declared Content-Length "
-                    f"{request.headers.get('Content-Length')} but body unreadable — forwarding without body")
+    # GET requests never have meaningful bodies. Skip reading entirely to avoid
+    # blocking on the SO1000's phantom Content-Length: 148 on /rht_parameters.
+    if request.method == "GET":
         body_data = b""
+    else:
+        try:
+            body_data = request.get_data()
+            ct = (request.content_type or '').lower()
+            if not body_data:
+                if 'application/x-www-form-urlencoded' in ct and request.form:
+                    from urllib.parse import urlencode
+                    body_data = urlencode(list(request.form.items(multi=True))).encode('utf-8')
+                elif 'application/json' in ct and request.json is not None:
+                    body_data = json.dumps(request.json).encode('utf-8')
+        except Exception:
+            log.warning(f"BODY   {request.method} {request.path}: declared Content-Length "
+                        f"{request.headers.get('Content-Length')} but body unreadable — forwarding without body")
+            body_data = b""
 
     try:
         resp = _proxy_session.request(
@@ -671,6 +682,17 @@ def rht_parameters(device_id):
         return _catch(f"rht_parameters/{device_id}", f"rht_parameters/{device_id}")
     log.info(f"PARAMS (SO1000) requested by device {device_id}")
     record("params_fetch", {"deviceid": device_id, "device_type": "so1000"})
+
+    # In proxy mode, forward to the real server and return its response —
+    # but only if it's a success. A non-200 (e.g. 401 if the token is stale
+    # or the upstream rejects our source IP) must NOT be passed to the device
+    # or it will stop reporting. Fall back to the canned response instead so
+    # the device always gets a valid config.
+    proxied = proxy_forward()
+    if proxied is not None and proxied.status_code == 200:
+        return proxied
+
+    # Takeover mode, proxy unreachable, or upstream error: canned response.
     params = dict(RHT_PARAMETERS, deviceid=device_id)
     return jsonify(params), 200
 
@@ -715,11 +737,15 @@ def rht_outlet_cycles():
     response = []
     for cycle in body:
         response.append({
-            "idPumpOutletCycleData": None,
+            # Real server returns a non-null DB primary key here. The SO1000
+            # firmware appears to treat null as "not acknowledged" and may stall
+            # future run reports. Derive a stable non-zero integer from the run
+            # timestamp so the device treats the record as confirmed.
+            "idPumpOutletCycleData": (cycle.get("utcunixTime", 0) % 2147483647) or 1,
             "date_time":     None, "year_num":      None, "month_num": None,
             "week_num":      None, "day_num":       None, "total_count": None,
             "total_average": None, "gallons":       None,
-            "cycleCurrent":  cycle.get("cycleCurrent"),
+            "cycleCurrent":  float(cycle.get("cycleCurrent", 0)),
             "cycleDuration": cycle.get("cycleDuration"),
             "deviceID":      cycle.get("deviceID"),
             "utcunixTime":   cycle.get("utcunixTime"),

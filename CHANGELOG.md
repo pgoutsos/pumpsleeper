@@ -4,6 +4,14 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v4.2] — 2026-06-13
+
+### Fixed
+- **Proxy forwarding used the wrong pumpspy.com server.** The proxy was hardcoded to `206.80.104.221`, but the SO1000 device actually connects to `173.241.229.38` (verified via packet capture). Requests were going to a different backend with no session context for the device, so `rht_parameters` returned a config that didn't trigger cycle mode and `/rht_outlet_cycles` was never sent. The proxy now derives the target from the device's own `Host` header (`www.pumpspy.com:8081`) so it follows pumpspy.com regardless of IP changes.
+- **Malformed proxy URL due to trailing space in Host header.** The device sends `Host: www.pumpspy.com:8081 ` with a trailing space; the proxy was concatenating it directly into the URL, producing `http://www.pumpspy.com:8081 /path` which failed to parse. The Host value is now stripped before use.
+
+---
+
 ## [v4.1] — 2026-06-13
 
 ### New
