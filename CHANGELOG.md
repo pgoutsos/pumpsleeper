@@ -4,6 +4,13 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v4.3] — 2026-06-13
+
+### Fixed
+- **Gmail (and strict SMTP servers) rejected email notifications.** The SMTP handshake was missing a second `EHLO` after the TLS upgrade (`STARTTLS`). The correct sequence is `EHLO → STARTTLS → EHLO → LOGIN`; skipping the post-TLS EHLO causes some servers to refuse login. Fixed in both the notification sender and the backup email sender.
+
+---
+
 ## [v4.2] — 2026-06-13
 
 ### Fixed

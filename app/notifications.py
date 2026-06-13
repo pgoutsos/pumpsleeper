@@ -154,6 +154,7 @@ def _send_email(subject: str, body: str, cfg: dict, link: str = "", link_label: 
         with smtplib.SMTP(host, port, timeout=10) as s:
             s.ehlo()
             s.starttls()
+            s.ehlo()  # re-identify after TLS upgrade
             s.login(user, pwd)
             s.sendmail(frm, [to], msg.as_string())
         log.info(f"NOTIF  email sent → {to} ({subject})")
@@ -295,6 +296,7 @@ def send_backup_email(data_bytes: bytes, filename: str):
         with smtplib.SMTP(host, port, timeout=15) as s:
             s.ehlo()
             s.starttls()
+            s.ehlo()  # re-identify after TLS upgrade
             s.login(user, cfg["email_smtp_pass"])
             s.sendmail(msg["From"], [to], msg.as_string())
         log.info(f"NOTIF  backup email sent -> {to}")
