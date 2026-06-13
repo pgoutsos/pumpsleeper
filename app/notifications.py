@@ -163,7 +163,7 @@ def _send_email(subject: str, body: str, cfg: dict, link: str = "", link_label: 
 
 
 def _send_ntfy(title: str, body: str, priority: str, cfg: dict, link: str = "", action_label: str = "Open Dashboard"):
-    import requests
+    import requests, json
     base  = (cfg["ntfy_url"] or "https://ntfy.sh").rstrip("/")
     topic = cfg["ntfy_topic"]
     token = cfg["ntfy_token"]
@@ -172,23 +172,28 @@ def _send_ntfy(title: str, body: str, priority: str, cfg: dict, link: str = "", 
         log.warning("NOTIF  ntfy topic not configured — skipping")
         return
 
-    url     = f"{base}/{topic}"
-    headers = {
-        "Title":    title,
-        "Priority": priority,
-        "Tags":     "water_pump",
+    # Use JSON body so title/message support full UTF-8 (emoji, non-ASCII).
+    # Header-based API encodes values as latin-1 which rejects e.g. ⚠.
+    url = f"{base}/"
+    payload: dict = {
+        "topic":    topic,
+        "title":    title,
+        "message":  body,
+        "priority": priority,
+        "tags":     ["water_pump"],
     }
     if link:
-        # Tapping the notification opens the link; also add a button.
-        headers["Click"]   = link
-        headers["Actions"] = f"view, {action_label}, {link}"
+        payload["click"] = link
+        payload["actions"] = [{"action": "view", "label": action_label, "url": link}]
+
+    headers = {"Content-Type": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
     try:
-        r = requests.post(url, data=body.encode(), headers=headers, timeout=10)
+        r = requests.post(url, data=json.dumps(payload).encode("utf-8"), headers=headers, timeout=10)
         r.raise_for_status()
-        log.info(f"NOTIF  ntfy sent → {url} ({title})")
+        log.info(f"NOTIF  ntfy sent → {base}/{topic} ({title})")
     except Exception as exc:
         log.error(f"NOTIF  ntfy failed: {exc}")
 

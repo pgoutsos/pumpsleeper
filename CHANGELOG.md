@@ -4,6 +4,13 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v4.4] — 2026-06-13
+
+### Fixed
+- **Ntfy notifications failed when the title contained emoji** (e.g. the ⚠ high-water alert). The header-based ntfy API encodes header values as latin-1, which can't represent characters outside that range. Switched to the ntfy JSON body API, which is fully UTF-8 and handles emoji and any non-ASCII characters in both title and message.
+
+---
+
 ## [v4.3] — 2026-06-13
 
 ### Fixed
