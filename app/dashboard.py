@@ -1083,8 +1083,8 @@ TEMPLATE = """<!DOCTYPE html>
 <!-- Debug actions -->
 <div class="grid" style="grid-template-columns:1fr; padding-top:0">
   <div class="card" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-    <button class="test-btn" id="savelog-btn" onclick="downloadLog()">⬇ Save Log</button>
-    <span style="font-size:12px;color:var(--muted)">Saves the last 2000 log lines from both PumpSleeper services to a file you choose.</span>
+    <button class="test-btn" id="savelog-btn" onclick="downloadLog()">⬇ Save Logs</button>
+    <span style="font-size:12px;color:var(--muted)">Downloads a zip of server.log, dashboard.log (includes notification test results), and the systemd journal.</span>
     <span class="settings-msg" id="savelog-msg" style="margin-top:0"></span>
     <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;border-left:1px solid var(--border);padding-left:14px">
       <input type="checkbox" id="capture-chk" onchange="toggleCapture(this)">
@@ -2812,34 +2812,48 @@ def api_settings_test():
 
 @app.route("/api/debug/log")
 def api_debug_log():
-    """Export recent service logs as a downloadable text file for troubleshooting."""
+    """Export service logs as a downloadable zip containing server.log, dashboard.log, and journal."""
+    import re as _re, zipfile, io
+    _ansi = _re.compile(r'\x1b\[[0-9;]*m')
+
+    stamp     = datetime.now().strftime("%Y%m%d-%H%M%S")
+    fname     = f"pumpsleeper-logs-{stamp}.zip"
+    _data_dir = os.path.join(os.environ.get("PUMPSPY_INSTALL_DIR", "/opt/pumpsleeper"), "data")
+
+    def _read_log_tail(path, n=2000):
+        try:
+            with open(path, "rb") as fh:
+                raw = fh.read()
+            lines = raw.decode("utf-8", errors="replace").splitlines()
+            return "\n".join(_ansi.sub("", l) for l in lines[-n:])
+        except Exception as exc:
+            return f"(could not read {path}: {exc})"
+
+    # journalctl output
     units = ["pumpsleeper", "pumpsleeper-dashboard"]
-    cmd = ["journalctl"]
-    for u in units:
-        cmd += ["-u", u]
-    cmd += ["-n", "2000", "--no-pager", "-o", "short-iso"]
+    cmd   = ["journalctl"] + [x for u in units for x in ("-u", u)] + ["-n", "500", "--no-pager", "-o", "short-iso"]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        body = proc.stdout or ""
-        if not body.strip():
-            body = ("(journalctl returned no entries. The dashboard service user may not "
-                    "have permission to read the system journal — add it to the "
-                    "'systemd-journal' group to enable full logs.)\n\nstderr:\n"
-                    + (proc.stderr or ""))
+        proc   = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        jbody  = proc.stdout or ""
+        if not jbody.strip():
+            jbody = ("(journalctl returned no entries — service user may lack "
+                     "'systemd-journal' group membership)\n\nstderr:\n" + (proc.stderr or ""))
     except FileNotFoundError:
-        body = "journalctl is not available on this host."
+        jbody = "journalctl is not available on this host."
     except subprocess.TimeoutExpired:
-        body = "Timed out while collecting logs."
+        jbody = "Timed out while collecting journal."
     except Exception as exc:
-        body = f"Failed to collect logs: {exc}"
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    fname = f"pumpsleeper-log-{stamp}.txt"
-    head  = ("PumpSleeper service log export\n"
-             f"Generated: {stamp}\n"
-             f"Units: {', '.join(units)} (last 2000 lines)\n"
-             + "=" * 60 + "\n\n")
-    resp = make_response(head + body)
-    resp.headers["Content-Type"] = "text/plain; charset=utf-8"
+        jbody = f"Failed to collect journal: {exc}"
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("server.log",    _read_log_tail(os.path.join(_data_dir, "server.log")))
+        zf.writestr("dashboard.log", _read_log_tail(os.path.join(_data_dir, "dashboard.log")))
+        zf.writestr("journal.log",   jbody)
+    buf.seek(0)
+
+    resp = make_response(buf.read())
+    resp.headers["Content-Type"]        = "application/zip"
     resp.headers["Content-Disposition"] = f'attachment; filename="{fname}"'
     return resp
 

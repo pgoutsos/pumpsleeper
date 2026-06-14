@@ -4,6 +4,13 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v4.5] — 2026-06-14
+
+### Improved
+- **"Save Logs" now downloads a zip of all three log files.** Previously the button downloaded a single text file from `journalctl`, which missed almost everything useful — the service writes to flat files, not the journal. The zip now contains `server.log` (proxy events, pump runs, real-event notifications), `dashboard.log` (test notification results, settings changes, API errors), and `journal.log` (service start/stop, crashes). ANSI color codes are stripped from the flat logs. This makes it straightforward to diagnose notification issues: open `dashboard.log` and search for `NOTIF`.
+
+---
+
 ## [v4.4] — 2026-06-13
 
 ### Fixed
