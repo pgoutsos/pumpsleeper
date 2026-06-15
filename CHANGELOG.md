@@ -4,6 +4,17 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v4.6] — 2026-06-14
+
+### New
+- **Compact layout.** A new two-column dashboard view optimised for at-a-glance monitoring. Toggle between Detailed and Compact using the pill in the header — your preference is saved to your account and restored on every load. Compact shows a status card (device online/offline, runs today, estimated gallons, longest run, last run detail), a full pump run history table, a device card (model, IP, signal strength with bar indicator, water sensor, mode), and a notifications card (email/ntfy on/off, last sent time). The "Today" toggle in the history header filters to today's runs client-side without a page reload. Long-run rows (>45 s) are highlighted in red.
+
+### Improved
+- **Notification last-sent timestamp.** Every successful notification send (email or ntfy) now records a timestamp in the database, visible in the Compact layout's notifications card.
+- **Refresh indicator.** The header briefly shows "↻ Refreshing…" while data is loading.
+
+---
+
 ## [v4.5] — 2026-06-14
 
 ### Improved

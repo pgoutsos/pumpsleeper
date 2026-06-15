@@ -208,11 +208,22 @@ def _dispatch(event: str, title: str, body: str, priority: str = "default"):
 
     link = _dashboard_link()
 
+    sent = False
     if cfg["email_enabled"] == "1":
         _send_email(f"PumpSleeper: {title}", body, cfg, link)
+        sent = True
 
     if cfg["ntfy_enabled"] == "1":
         _send_ntfy(title, body, priority, cfg, link)
+        sent = True
+
+    if sent:
+        try:
+            from db import _set_setting
+            from datetime import datetime, timezone
+            _set_setting("last_notification_ts", datetime.now(timezone.utc).isoformat())
+        except Exception:
+            pass
 
 
 def notify(event: str, detail: str = ""):

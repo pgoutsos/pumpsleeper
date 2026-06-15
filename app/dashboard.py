@@ -33,6 +33,14 @@ app = Flask(__name__)
 # via the tunnel, and a Secure cookie would break the LAN logins.)
 init_db()
 from db import get_secret_key as _get_secret_key
+# ── Feature flag: mode toggle ─────────────────────────────────────────────────
+# Set to True to let users switch between Proxy and Takeover mode from the UI.
+# When False the toggle is hidden and the POST /api/mode endpoint is blocked —
+# all proxy-mode code remains intact and the feature can be re-enabled instantly
+# by flipping this back to True.
+SHOW_MODE_TOGGLE = False
+# ─────────────────────────────────────────────────────────────────────────────
+
 app.secret_key = _get_secret_key()
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
@@ -397,6 +405,22 @@ def compute_data(events, tz_offset_minutes: int = 0,
     total_main_gallons_today   = round(sum(r["gallons"]  for r in main_runs_today   if r.get("gallons")  is not None), 1)
     total_backup_gallons_today = round(sum(r["gallons"]  for r in backup_runs_today if r.get("gallons")  is not None), 1)
 
+    # Longest run today (across main + backup)
+    all_runs_today = main_runs_today + backup_runs_today
+    _today_durations = [r["duration"] for r in all_runs_today if r.get("duration") is not None]
+    longest_run_today = round(max(_today_durations), 1) if _today_durations else None
+
+    # Most recent run detail for compact "last run" line
+    last_run_detail = None
+    if combined_runs:
+        lr = combined_runs[0]
+        last_run_detail = {
+            "ts":       lr["ts"],
+            "duration": lr.get("duration"),
+            "amps":     lr.get("amps"),
+            "gallons":  lr.get("gallons"),
+        }
+
     # --- Backup battery voltage from latest bbs_json STOPPED event ---------------
     last_backup_battery_v = None
     last_backup_loaded_v  = None
@@ -443,6 +467,8 @@ def compute_data(events, tz_offset_minutes: int = 0,
         "total_backup_runtime_today":  total_backup_runtime_today,
         "total_main_gallons_today":    total_main_gallons_today,
         "total_backup_gallons_today":  total_backup_gallons_today,
+        "longest_run_today":   longest_run_today,
+        "last_run_detail":     last_run_detail,
         "op_status":           op_status,
         "device_type":         get_device_type(),
         "water_sensor":        water_sensor,
@@ -463,21 +489,21 @@ TEMPLATE = """<!DOCTYPE html>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
   :root {
-    --bg: #0f1117; --card: #1a1d27; --border: #2a2d3a;
-    --text: #e2e8f0; --muted: #8892a4; --green: #22c55e;
-    --red: #ef4444; --yellow: #f59e0b; --blue: #3b82f6; --purple: #a855f7;
+    --bg: #07090f; --card: #0e1220; --border: #1a2040;
+    --text: #dde5f4; --muted: #4a5878; --green: #22c55e;
+    --red: #ef4444; --yellow: #f59e0b; --blue: #00c8ff; --purple: #7755ee;
   }
   /* Light palette — applied for explicit light, or auto + OS light preference */
   :root[data-theme="light"] {
-    --bg: #f4f6fa; --card: #ffffff; --border: #d9dee8;
-    --text: #1d2430; --muted: #5b6675; --green: #16a34a;
-    --red: #dc2626; --yellow: #d97706; --blue: #2563eb; --purple: #9333ea;
+    --bg: #f0f4fa; --card: #ffffff; --border: #d5dcea;
+    --text: #111827; --muted: #9aaac0; --green: #16a34a;
+    --red: #dc2626; --yellow: #d97706; --blue: #0077bb; --purple: #5533bb;
   }
   @media (prefers-color-scheme: light) {
     :root[data-theme="auto"] {
-      --bg: #f4f6fa; --card: #ffffff; --border: #d9dee8;
-      --text: #1d2430; --muted: #5b6675; --green: #16a34a;
-      --red: #dc2626; --yellow: #d97706; --blue: #2563eb; --purple: #9333ea;
+      --bg: #f0f4fa; --card: #ffffff; --border: #d5dcea;
+      --text: #111827; --muted: #9aaac0; --green: #16a34a;
+      --red: #dc2626; --yellow: #d97706; --blue: #0077bb; --purple: #5533bb;
     }
   }
   .theme-btn.active { border-color: var(--blue); color: var(--blue); }
@@ -502,9 +528,9 @@ TEMPLATE = """<!DOCTYPE html>
   .stat-value { font-size: 26px; font-weight: 700; }
   .stat-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
   .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
-  .dot.online { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .dot.online { background: var(--green); }
   .dot.offline { background: var(--red); }
-  .dot.pending { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); animation: pulse 1.2s ease-in-out infinite; }
+  .dot.pending { background: var(--yellow); animation: pulse 1.2s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
   .section-title { font-size: 13px; font-weight: 600; color: var(--muted);
                    text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 12px; }
@@ -633,15 +659,65 @@ TEMPLATE = """<!DOCTYPE html>
   .settings-msg.err { color:var(--red); }
   .two-row-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
   @media (max-width:500px) { .two-row-grid { grid-template-columns:1fr; } }
+  /* Layout toggle pill */
+  .layout-toggle { display:flex; align-items:center; gap:4px; background:var(--bg);
+                   border:1px solid var(--border); border-radius:6px; padding:2px; }
+  .layout-btn { padding:4px 12px; border-radius:4px; border:none; font-size:11px;
+                font-weight:600; cursor:pointer; background:transparent;
+                color:var(--muted); transition:all 0.15s; letter-spacing:0.3px; }
+  .layout-btn.active { background:var(--card); color:var(--text);
+                       box-shadow:0 1px 3px rgba(0,0,0,0.3); }
+  /* Compact layout */
+  #view-compact { display:none; padding:20px 24px; }
+  .compact-grid { display:grid; grid-template-columns:1.8fr 1fr; gap:16px; align-items:start; }
+  @media (max-width:900px) { .compact-grid { grid-template-columns:1fr; } }
+  .compact-col { display:flex; flex-direction:column; gap:16px; }
+  .compact-stat-row { display:flex; gap:0; border-bottom:1px solid var(--border); padding-bottom:14px; margin-bottom:14px; }
+  .compact-stat { flex:1; padding-right:16px; }
+  .compact-stat + .compact-stat { padding-left:16px; border-left:1px solid var(--border); }
+  .compact-stat-num { font-size:32px; font-weight:700; line-height:1; }
+  .compact-stat-unit { font-size:15px; color:var(--muted); font-weight:600; }
+  .compact-stat-label { font-size:11px; color:var(--muted); margin-top:4px; }
+  .compact-last-run { font-size:13px; color:var(--muted); }
+  .compact-last-run strong { color:var(--blue); font-weight:600; }
+  .compact-device-row { display:flex; justify-content:space-between; align-items:baseline;
+                        padding:8px 0; border-bottom:1px solid var(--border); font-size:13px; }
+  .compact-device-row:last-child { border-bottom:none; }
+  .compact-device-key { color:var(--muted); }
+  .compact-history-table { width:100%; border-collapse:collapse; font-size:13px; margin-top:8px; }
+  .compact-history-table th { text-align:left; padding:6px 8px; color:var(--muted);
+                              font-size:11px; font-weight:500; text-transform:uppercase;
+                              letter-spacing:0.4px; border-bottom:1px solid var(--border); }
+  .compact-history-table td { padding:7px 8px; border-bottom:1px solid var(--border); }
+  .compact-history-table tr:last-child td { border-bottom:none; }
+  .compact-history-table .dur { color:var(--blue); font-weight:600; }
+  .compact-history-table .long-run { color:var(--red); font-size:11px; font-weight:600; }
+  .compact-online { font-size:15px; font-weight:600; margin-bottom:14px; }
+  /* Signal bars */
+  .sig-bars { display:inline-flex; align-items:flex-end; gap:2px; height:14px; vertical-align:middle; margin-left:5px; }
+  .sig-bar { width:3px; border-radius:1px; background:var(--border); }
+  .sig-bar.lit { background:var(--blue); }
+  .sig-bar:nth-child(1) { height:4px; }
+  .sig-bar:nth-child(2) { height:7px; }
+  .sig-bar:nth-child(3) { height:10px; }
+  .sig-bar:nth-child(4) { height:14px; }
 </style>
 </head>
 <body>
 <header>
   <h1>Pump<span>Sleeper</span></h1>
-  <div class="mode-toggle">
-    <button class="mode-btn inactive" id="btn-proxy"    onclick="setMode('proxy')">Proxy</button>
-    <button class="mode-btn inactive" id="btn-takeover" onclick="setMode('takeover')">Takeover</button>
-    <span id="refresh-info">Loading…</span>
+  <div style="display:flex;align-items:center;gap:14px">
+    <div class="layout-toggle">
+      <button class="layout-btn {% if dashboard_layout == 'detailed' %}active{% endif %}" id="btn-layout-detailed" onclick="setLayout('detailed')">Detailed</button>
+      <button class="layout-btn {% if dashboard_layout == 'compact' %}active{% endif %}"  id="btn-layout-compact"  onclick="setLayout('compact')">Compact</button>
+    </div>
+    {% if show_mode_toggle %}
+    <div class="mode-toggle">
+      <button class="mode-btn inactive" id="btn-proxy"    onclick="setMode('proxy')">Proxy</button>
+      <button class="mode-btn inactive" id="btn-takeover" onclick="setMode('takeover')">Takeover</button>
+    </div>
+    {% endif %}
+    <span id="refresh-info" style="display:none"></span>
   </div>
 </header>
 
@@ -652,7 +728,9 @@ TEMPLATE = """<!DOCTYPE html>
 </div>
 
 <div id="tab-dashboard" class="tab-panel active">
+<div id="view-detailed" {% if dashboard_layout == 'compact' %}style="display:none"{% endif %}>
 
+{% if show_mode_toggle %}
 <!-- Auth failure banner -->
 <div class="auth-banner" id="auth-banner">
   <span class="auth-banner-msg">
@@ -662,6 +740,7 @@ TEMPLATE = """<!DOCTYPE html>
   <button class="auth-takeover-btn" onclick="setMode('takeover')">Switch to Takeover</button>
 </div>
 <!-- /auth banner -->
+{% endif %}
 
 <!-- Stat cards -->
 <div class="grid" id="stat-cards" style="display:flex;flex-wrap:wrap;align-items:stretch">
@@ -798,6 +877,120 @@ TEMPLATE = """<!DOCTYPE html>
 <!-- /rssi widget -->
 </div>
 <!-- /history subtabs -->
+
+</div><!-- end view-detailed -->
+
+<!-- ── Compact view ──────────────────────────────────────────────────────── -->
+<div id="view-compact" {% if dashboard_layout != 'compact' %}style="display:none"{% endif %}>
+  <div class="compact-grid">
+
+    <!-- Left column: status card + run history -->
+    <div class="compact-col">
+
+      <!-- Status card -->
+      <div class="card">
+        <div class="compact-online">
+          <span id="c-online-dot" class="dot offline"></span><span id="c-online-text">—</span>
+          <span style="float:right;font-size:12px;font-weight:400;color:var(--muted)" id="c-last-heard">—</span>
+        </div>
+        <div class="compact-stat-row" id="c-stat-row">
+          <div class="compact-stat">
+            <div class="compact-stat-num" id="c-runs-today">—</div>
+            <div class="compact-stat-label">runs today</div>
+          </div>
+          <div class="compact-stat">
+            <div><span class="compact-stat-num" id="c-gal-today">—</span> <span class="compact-stat-unit">gal</span></div>
+            <div class="compact-stat-label">estimated today</div>
+          </div>
+          <div class="compact-stat" id="c-longest-col">
+            <div><span class="compact-stat-num" id="c-longest-run">—</span> <span class="compact-stat-unit">s</span></div>
+            <div class="compact-stat-label">longest run today</div>
+          </div>
+          <!-- Water sensor replaces longest run for SO1000 -->
+          <div class="compact-stat" id="c-water-col" style="display:none">
+            <div class="compact-stat-num" id="c-water-state" style="font-size:24px">—</div>
+            <div class="compact-stat-label">water sensor</div>
+          </div>
+        </div>
+        <div class="compact-last-run" id="c-last-run-line" style="color:var(--muted)">—</div>
+      </div>
+
+      <!-- Run history card -->
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+          <span style="font-size:14px;font-weight:600">Pump run history</span>
+          <button id="c-today-toggle" onclick="toggleCompactToday()"
+            style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:5px;cursor:pointer;
+                   border:1px solid var(--border);background:transparent;color:var(--muted);transition:all 0.15s">
+            Today
+          </button>
+        </div>
+        <div class="scroll-table" style="max-height:480px">
+          <table class="compact-history-table" id="c-history-table">
+            <thead><tr>
+              <th>Time</th>
+              <th>Duration</th>
+              <th>Current</th>
+              <th>Gallons (est)</th>
+            </tr></thead>
+            <tbody id="c-history-tbody">
+              <tr><td colspan="4" class="empty">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div><!-- /left col -->
+
+    <!-- Right column: device + notifications -->
+    <div class="compact-col">
+
+      <!-- Device card -->
+      <div class="card">
+        <div class="section-title" style="margin-bottom:10px">Device</div>
+        <div class="compact-device-row">
+          <span class="compact-device-key">Model</span>
+          <span id="c-model">—</span>
+        </div>
+        <div class="compact-device-row">
+          <span class="compact-device-key">IP</span>
+          <span id="c-ip" style="font-family:monospace;letter-spacing:0.3px">—</span>
+        </div>
+        <div class="compact-device-row">
+          <span class="compact-device-key">Signal</span>
+          <span id="c-signal">—</span>
+        </div>
+        <div class="compact-device-row" id="c-water-row">
+          <span class="compact-device-key">Water sensor</span>
+          <span id="c-water-val">—</span>
+        </div>
+        <div class="compact-device-row">
+          <span class="compact-device-key">Mode</span>
+          <span id="c-mode">—</span>
+        </div>
+      </div>
+
+      <!-- Notifications card -->
+      <div class="card">
+        <div class="section-title" style="margin-bottom:10px">Notifications</div>
+        <div class="compact-device-row">
+          <span class="compact-device-key">Email</span>
+          <span id="c-notif-email">—</span>
+        </div>
+        <div class="compact-device-row">
+          <span class="compact-device-key">Ntfy</span>
+          <span id="c-notif-ntfy">—</span>
+        </div>
+        <div class="compact-device-row">
+          <span class="compact-device-key">Last sent</span>
+          <span id="c-notif-last">—</span>
+        </div>
+      </div>
+
+    </div><!-- /right col -->
+  </div><!-- /compact-grid -->
+</div><!-- end view-compact -->
+<!-- ── /Compact view ─────────────────────────────────────────────────────── -->
 
 </div><!-- end tab-dashboard -->
 
@@ -1458,13 +1651,164 @@ function update(d) {
   setTbody('unknown-table', unknownRows);
 
   document.getElementById('refresh-info').textContent = 'Updated ' + fmtAgo(d.server_time);
+
+  // ── Compact view updates ────────────────────────────────────────────────
+  updateCompact(d);
+}
+
+let _compactTodayOnly = false;
+
+function toggleCompactToday() {
+  _compactTodayOnly = !_compactTodayOnly;
+  const btn = document.getElementById('c-today-toggle');
+  if (btn) {
+    btn.style.background     = _compactTodayOnly ? 'rgba(0,200,255,0.12)' : 'transparent';
+    btn.style.color          = _compactTodayOnly ? 'var(--blue)' : 'var(--muted)';
+    btn.style.borderColor    = _compactTodayOnly ? 'var(--blue)' : 'var(--border)';
+  }
+  renderCompactHistory();
+}
+
+function renderCompactHistory() {
+  let runs = _pumpRuns || [];
+  if (_compactTodayOnly) {
+    const tz = new Date().getTimezoneOffset();
+    const todayStr = (() => {
+      const d = new Date(Date.now() - tz * 60000);
+      return d.toISOString().slice(0, 10);
+    })();
+    runs = runs.filter(r => r.ts && r.ts.slice(0, 10) === todayStr);
+  }
+  const rows = runs.map(r => {
+    const dur    = r.duration !== null && r.duration !== undefined ? r.duration + 's' : '—';
+    const amp    = r.amps     !== null && r.amps     !== undefined ? r.amps + 'A'     : '—';
+    const gal    = r.gallons  !== null && r.gallons  !== undefined ? Math.round(r.gallons) : '—';
+    const isLong = r.duration > 45;
+    const long   = isLong ? ' <span class="long-run">long run</span>' : '';
+    return '<tr' + (isLong ? ' style="background:rgba(239,68,68,0.08)"' : '') + '>' +
+      '<td>' + fmtTs(r.ts) + '</td>' +
+      '<td><span class="dur">' + dur + '</span>' + long + '</td>' +
+      '<td>' + amp + '</td>' +
+      '<td>' + gal + '</td>' +
+      '</tr>';
+  });
+  const cTbody = document.getElementById('c-history-tbody');
+  if (cTbody) cTbody.innerHTML = rows.length ? rows.join('') : '<tr><td colspan="4" class="empty">No runs yet</td></tr>';
+}
+
+function signalBarsHtml(rssi) {
+  // rssi is negative dBm; higher (less negative) = stronger signal
+  const lit = rssi >= -55 ? 4 : rssi >= -65 ? 3 : rssi >= -75 ? 2 : 1;
+  let bars = '<span class="sig-bars">';
+  for (let i = 1; i <= 4; i++) bars += '<span class="sig-bar' + (i <= lit ? ' lit' : '') + '"></span>';
+  return bars + '</span>';
+}
+
+function updateCompact(d) {
+  // Online status
+  const cDot  = document.getElementById('c-online-dot');
+  const cTxt  = document.getElementById('c-online-text');
+  const cHrd  = document.getElementById('c-last-heard');
+  if (cDot && cTxt) {
+    const ls = d.link_status || (d.online ? 'online' : 'offline');
+    cDot.className = 'dot ' + ls;
+    cTxt.textContent = ls === 'online' ? 'Device online' : ls === 'pending' ? 'Connecting…' : 'Device offline';
+    cTxt.style.color = ls === 'online' ? 'var(--green)' : ls === 'pending' ? 'var(--yellow)' : 'var(--red)';
+  }
+  if (cHrd) {
+    cHrd.textContent = d.last_ping_ts ? 'Last heard ' + fmtAgo(d.last_ping_ts) : '';
+  }
+
+  // Stat row
+  const totalRuns = (d.main_runs_today || 0) + (d.backup_runs_today || 0);
+  const mainGalC  = d.total_main_gallons_today   || 0;
+  const bkupGalC  = d.total_backup_gallons_today || 0;
+  const totGalC   = Math.round((mainGalC + bkupGalC) * 10) / 10;
+  const el = id => document.getElementById(id);
+  if (el('c-runs-today'))  el('c-runs-today').textContent  = totalRuns;
+  if (el('c-gal-today'))   el('c-gal-today').textContent   = totGalC;
+  if (el('c-longest-run')) el('c-longest-run').textContent = d.longest_run_today !== null && d.longest_run_today !== undefined ? d.longest_run_today : '—';
+
+  // Water sensor vs longest-run column (SO1000)
+  const cLongest = el('c-longest-col');
+  const cWater   = el('c-water-col');
+  const cWaterRow = el('c-water-row');
+  if (d.device_type === 'so1000') {
+    if (cLongest) cLongest.style.display = 'none';
+    if (cWater)   cWater.style.display   = 'block';
+    if (cWaterRow) cWaterRow.style.display = '';
+    const cWS = el('c-water-state'), cWV = el('c-water-val');
+    if (d.water_sensor) {
+      const active = d.water_sensor.active;
+      if (cWS) { cWS.textContent = active ? 'HIGH' : 'Dry'; cWS.style.color = active ? 'var(--red)' : 'var(--green)'; }
+      if (cWV) { cWV.textContent = active ? 'High' : 'Dry';  cWV.style.color = active ? 'var(--red)' : 'var(--green)'; }
+    } else {
+      if (cWS) { cWS.textContent = '—'; cWS.style.color = 'var(--muted)'; }
+      if (cWV) { cWV.textContent = '—'; cWV.style.color = 'var(--muted)'; }
+    }
+  } else {
+    if (cLongest)  cLongest.style.display  = 'block';
+    if (cWater)    cWater.style.display    = 'none';
+    if (cWaterRow) cWaterRow.style.display = 'none';
+  }
+
+  // Last run line
+  const lrd = d.last_run_detail;
+  const cLR = el('c-last-run-line');
+  if (cLR) {
+    if (lrd && lrd.ts) {
+      const dur  = lrd.duration !== null && lrd.duration !== undefined ? '<strong>' + lrd.duration + 's</strong>' : '';
+      const amps = lrd.amps     !== null && lrd.amps     !== undefined ? lrd.amps + 'A' : '';
+      const gal  = lrd.gallons  !== null && lrd.gallons  !== undefined ? '~' + Math.round(lrd.gallons) + ' gal' : '';
+      const parts = [dur, amps, gal].filter(Boolean).join(' · ');
+      cLR.innerHTML = 'Last run at ' + fmtTs(lrd.ts) + (parts ? ' — ' + parts : '');
+    } else {
+      cLR.textContent = 'No runs yet';
+    }
+  }
+
+  // Run history table — delegate to renderCompactHistory() so the Today toggle works
+  renderCompactHistory();
+
+  // Device card
+  if (el('c-model')) el('c-model').textContent = d.device_type === 'so1000' ? 'SO1000' : 'BBS';
+  if (el('c-ip'))    el('c-ip').textContent    = d.device_ip || '—';
+  if (el('c-signal')) {
+    el('c-signal').innerHTML = d.last_rssi !== null && d.last_rssi !== undefined
+      ? d.last_rssi + ' dBm' + signalBarsHtml(d.last_rssi) : '—';
+  }
+  if (el('c-mode')) {
+    const m = d.mode || '—';
+    el('c-mode').textContent  = m.charAt(0).toUpperCase() + m.slice(1);
+    el('c-mode').style.color  = m === 'proxy' ? 'var(--blue)' : m === 'takeover' ? 'var(--yellow)' : 'var(--muted)';
+  }
+
+  // Notifications card
+  const enabledStyle  = 'color:var(--green);font-weight:600';
+  const disabledStyle = 'color:var(--muted)';
+  if (el('c-notif-email')) {
+    el('c-notif-email').textContent = d.notif_email_enabled ? 'On' : 'Off';
+    el('c-notif-email').style.cssText = d.notif_email_enabled ? enabledStyle : disabledStyle;
+  }
+  if (el('c-notif-ntfy')) {
+    el('c-notif-ntfy').textContent = d.notif_ntfy_enabled ? 'On' : 'Off';
+    el('c-notif-ntfy').style.cssText = d.notif_ntfy_enabled ? enabledStyle : disabledStyle;
+  }
+  if (el('c-notif-last')) {
+    el('c-notif-last').textContent = d.last_notification_ts ? fmtTs(d.last_notification_ts) : 'Never';
+  }
 }
 
 async function refresh() {
+  const info = document.getElementById('refresh-info');
+  if (info) info.textContent = '↻ Refreshing…';
   try {
     const tzOffset  = new Date().getTimezoneOffset();
-    const filterDate = document.getElementById('filter-date').value;   // YYYY-MM-DD or ''
-    const filterPump = document.getElementById('filter-pump').value;   // 'main'|'backup'|''
+    // Compact view fetches all data and filters client-side — skip server filters
+    const compact = document.getElementById('view-compact');
+    const isCompact = compact && compact.style.display !== 'none';
+    const filterDate = isCompact ? '' : document.getElementById('filter-date').value;
+    const filterPump = isCompact ? '' : document.getElementById('filter-pump').value;
     let url = '/api/data?tz_offset=' + tzOffset;
     if (filterDate) url += '&filter_date=' + encodeURIComponent(filterDate);
     if (filterPump) url += '&filter_pump=' + encodeURIComponent(filterPump);
@@ -1472,7 +1816,7 @@ async function refresh() {
     const d = await r.json();
     update(d);
   } catch(e) {
-    document.getElementById('refresh-info').textContent = 'Error fetching data';
+    if (info) info.textContent = 'Error fetching data';
   }
 }
 
@@ -1480,16 +1824,19 @@ function updateModeButtons(d) {
   const mode     = d.mode || d; // accept full object or bare mode string
   const proxy    = document.getElementById('btn-proxy');
   const takeover = document.getElementById('btn-takeover');
-  proxy.className    = 'mode-btn ' + (mode === 'proxy'    ? 'active-proxy'    : 'inactive');
-  takeover.className = 'mode-btn ' + (mode === 'takeover' ? 'active-takeover' : 'inactive');
+  // Buttons may not exist if SHOW_MODE_TOGGLE is False
+  if (proxy)    proxy.className    = 'mode-btn ' + (mode === 'proxy'    ? 'active-proxy'    : 'inactive');
+  if (takeover) takeover.className = 'mode-btn ' + (mode === 'takeover' ? 'active-takeover' : 'inactive');
 
   // Show auth failure banner only in proxy mode with consecutive failures
   const banner   = document.getElementById('auth-banner');
   const failures = d.auth_failures || 0;
-  if (mode === 'proxy' && failures >= 2) {
-    banner.classList.add('visible');
-  } else {
-    banner.classList.remove('visible');
+  if (banner) {
+    if (mode === 'proxy' && failures >= 2) {
+      banner.classList.add('visible');
+    } else {
+      banner.classList.remove('visible');
+    }
   }
 }
 
@@ -1668,8 +2015,41 @@ if (window.matchMedia) {
 refresh();
 fetchMode();
 loadTheme();
+initLayout('{{ dashboard_layout }}');
 setInterval(refresh, 30000);
 setInterval(fetchMode, 10000);
+
+// ── Layout toggle (Detailed / Compact) ───────────────────────────────────
+function initLayout(layout) {
+  applyLayout(layout, false);
+}
+
+function applyLayout(layout, save) {
+  const detailed = document.getElementById('view-detailed');
+  const compact  = document.getElementById('view-compact');
+  const btnD     = document.getElementById('btn-layout-detailed');
+  const btnC     = document.getElementById('btn-layout-compact');
+  if (layout === 'compact') {
+    if (detailed) detailed.style.display = 'none';
+    if (compact)  compact.style.display  = 'block';
+    if (btnD) btnD.classList.remove('active');
+    if (btnC) btnC.classList.add('active');
+  } else {
+    if (detailed) detailed.style.display = 'block';
+    if (compact)  compact.style.display  = 'none';
+    if (btnD) btnD.classList.add('active');
+    if (btnC) btnC.classList.remove('active');
+  }
+  if (save) {
+    fetch('/api/layout', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ layout }) }).catch(() => {});
+  }
+}
+
+async function setLayout(layout) {
+  applyLayout(layout, true);
+}
 
 // ── Tab switching ─────────────────────────────────────────────────────────
 function showTab(name) {
@@ -2302,29 +2682,29 @@ MOBILE_TEMPLATE = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0f1117">
+<meta name="theme-color" content="#07090f">
 <title>PumpSleeper</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
   :root {
-    --bg: #0f1117; --card: #1a1d27; --border: #2a2d3a;
-    --text: #e2e8f0; --muted: #8892a4; --green: #22c55e;
-    --red: #ef4444; --yellow: #f59e0b; --blue: #3b82f6; --purple: #a855f7;
-    --nav-h: 60px; --bar-bg: rgba(15,17,23,0.94);
+    --bg: #07090f; --card: #0e1220; --border: #1a2040;
+    --text: #dde5f4; --muted: #4a5878; --green: #22c55e;
+    --red: #ef4444; --yellow: #f59e0b; --blue: #00c8ff; --purple: #7755ee;
+    --nav-h: 60px; --bar-bg: rgba(7,9,15,0.94);
   }
   /* Light palette — explicit light, or auto + OS light preference */
   :root[data-theme="light"] {
-    --bg: #f4f6fa; --card: #ffffff; --border: #d9dee8;
-    --text: #1d2430; --muted: #5b6675; --green: #16a34a;
-    --red: #dc2626; --yellow: #d97706; --blue: #2563eb; --purple: #9333ea;
-    --bar-bg: rgba(244,246,250,0.94);
+    --bg: #f0f4fa; --card: #ffffff; --border: #d5dcea;
+    --text: #111827; --muted: #9aaac0; --green: #16a34a;
+    --red: #dc2626; --yellow: #d97706; --blue: #0077bb; --purple: #5533bb;
+    --bar-bg: rgba(240,244,250,0.94);
   }
   @media (prefers-color-scheme: light) {
     :root[data-theme="auto"] {
-      --bg: #f4f6fa; --card: #ffffff; --border: #d9dee8;
-      --text: #1d2430; --muted: #5b6675; --green: #16a34a;
-      --red: #dc2626; --yellow: #d97706; --blue: #2563eb; --purple: #9333ea;
-      --bar-bg: rgba(244,246,250,0.94);
+      --bg: #f0f4fa; --card: #ffffff; --border: #d5dcea;
+      --text: #111827; --muted: #9aaac0; --green: #16a34a;
+      --red: #dc2626; --yellow: #d97706; --blue: #0077bb; --purple: #5533bb;
+      --bar-bg: rgba(240,244,250,0.94);
     }
   }
   .theme-btn.active { border-color: var(--blue); color: var(--blue); }
@@ -2355,9 +2735,9 @@ MOBILE_TEMPLATE = """<!DOCTYPE html>
   .stat-value { font-size: 24px; font-weight: 700; line-height: 1.15; }
   .stat-sub { font-size: 11px; color: var(--muted); margin-top: 4px; word-break: break-word; }
   .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
-  .dot.online { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .dot.online { background: var(--green); }
   .dot.offline { background: var(--red); }
-  .dot.pending { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); animation: pulse 1.2s ease-in-out infinite; }
+  .dot.pending { background: var(--yellow); animation: pulse 1.2s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
   .section-title { font-size: 13px; font-weight: 600; color: var(--muted);
                    text-transform: uppercase; letter-spacing: 0.6px; }
@@ -2491,10 +2871,12 @@ MOBILE_TEMPLATE = """<!DOCTYPE html>
     <h1>Pump<span>Sleeper</span></h1>
     <span id="refresh-info">Loading…</span>
   </div>
+  {% if show_mode_toggle %}
   <div class="mode-toggle">
     <button class="mode-btn inactive" id="btn-proxy"    onclick="setMode('proxy')">Proxy</button>
     <button class="mode-btn inactive" id="btn-takeover" onclick="setMode('takeover')">Takeover</button>
   </div>
+  {% endif %}
 </header>
 
 <div id="tab-dashboard" class="tab-panel active">
@@ -2689,6 +3071,8 @@ def api_mode_get():
 
 @app.route("/api/mode", methods=["POST"])
 def api_mode_set():
+    if not SHOW_MODE_TOGGLE:
+        return jsonify({"error": "mode switching is disabled"}), 403
     try:
         body = request.get_json(force=True, silent=True) or {}
         r = rlib.post(f"{SERVER_URL}/api/mode", json=body, timeout=3)
@@ -3192,8 +3576,8 @@ LOGIN_TEMPLATE = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PumpSleeper — Sign in</title>
 <style>
-  :root { --bg:#0f1117; --card:#1a1d27; --border:#2a2d3a; --text:#e2e8f0;
-          --muted:#8892a4; --blue:#3b82f6; --red:#ef4444; --yellow:#f59e0b; }
+  :root { --bg:#07090f; --card:#0e1220; --border:#1a2040; --text:#dde5f4;
+          --muted:#4a5878; --blue:#00c8ff; --red:#ef4444; --yellow:#f59e0b; }
   * { box-sizing:border-box; margin:0; padding:0; }
   body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif;
          min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
@@ -3278,8 +3662,8 @@ def logout():
 # notification channels (email and/or ntfy). Token is single-use, 30-min TTL.
 # ---------------------------------------------------------------------------
 _AUTH_CSS = """
-  :root { --bg:#0f1117; --card:#1a1d27; --border:#2a2d3a; --text:#e2e8f0;
-          --muted:#8892a4; --blue:#3b82f6; --red:#ef4444; --green:#22c55e; }
+  :root { --bg:#07090f; --card:#0e1220; --border:#1a2040; --text:#dde5f4;
+          --muted:#4a5878; --blue:#00c8ff; --red:#ef4444; --green:#22c55e; }
   * { box-sizing:border-box; margin:0; padding:0; }
   body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif;
          min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
@@ -3589,10 +3973,13 @@ def api_settings_backup_auto():
 
 @app.route("/")
 def index():
-    from db import get_ui_theme
+    from db import get_ui_theme, get_dashboard_layout
     mobile = _wants_mobile(request)
     theme  = get_ui_theme("mobile" if mobile else "desktop")
-    html = render_template_string(MOBILE_TEMPLATE if mobile else TEMPLATE)
+    layout = get_dashboard_layout()
+    html = render_template_string(MOBILE_TEMPLATE if mobile else TEMPLATE,
+                                  show_mode_toggle=SHOW_MODE_TOGGLE,
+                                  dashboard_layout=layout)
     # Inject the saved theme on <html> so the correct palette paints with no flash.
     html = html.replace('<html lang="en">',
                         f'<html lang="en" data-theme="{theme}">', 1)
@@ -3648,7 +4035,34 @@ def api_data():
                         filter_pump=filter_pump)
     data["mode"] = get_mode()
     data["pi_uplink"] = _detect_uplink()
+    # Notification status for compact layout
+    try:
+        from notifications import get_settings as _ns
+        from db import _get_setting
+        ns = _ns()
+        data["notif_email_enabled"] = ns["email_enabled"] == "1"
+        data["notif_ntfy_enabled"]  = ns["ntfy_enabled"]  == "1"
+        data["last_notification_ts"] = _get_setting("last_notification_ts")
+    except Exception:
+        data["notif_email_enabled"] = False
+        data["notif_ntfy_enabled"]  = False
+        data["last_notification_ts"] = None
     return jsonify(data)
+
+
+@app.route("/api/layout", methods=["GET", "POST"])
+def api_layout():
+    from db import get_dashboard_layout, set_dashboard_layout
+    if request.method == "POST":
+        body = request.get_json(silent=True) or {}
+        layout = body.get("layout", "")
+        try:
+            set_dashboard_layout(layout)
+            return jsonify({"ok": True, "layout": layout})
+        except ValueError as e:
+            return jsonify({"ok": False, "error": str(e)}), 400
+    return jsonify({"layout": get_dashboard_layout()})
+
 
 def _backup_email_loop():
     """Once enabled, email a settings backup about weekly (checks hourly).
@@ -3671,6 +4085,14 @@ def _backup_email_loop():
         time.sleep(3600)
 
 threading.Thread(target=_backup_email_loop, daemon=True, name="backup-email").start()
+
+# If the mode toggle is hidden, ensure the server is in takeover mode so users
+# aren't accidentally in proxy mode with no way to switch out of it.
+if not SHOW_MODE_TOGGLE:
+    try:
+        rlib.post(f"{SERVER_URL}/api/mode", json={"mode": "takeover"}, timeout=3)
+    except Exception:
+        pass  # server may not be up yet; it will default correctly on its own start
 
 
 if __name__ == "__main__":

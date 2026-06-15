@@ -244,6 +244,23 @@ def set_device_type(device_type: str):
 
 
 # ---------------------------------------------------------------------------
+# Dashboard layout preference — persisted per-account so it follows the user
+#   'detailed' = full card layout (default)
+#   'compact'  = condensed two-column layout
+# ---------------------------------------------------------------------------
+VALID_DASHBOARD_LAYOUTS = ("detailed", "compact")
+
+def get_dashboard_layout() -> str:
+    val = _get_setting("dashboard_layout", "detailed")
+    return val if val in VALID_DASHBOARD_LAYOUTS else "detailed"
+
+def set_dashboard_layout(layout: str):
+    if layout not in VALID_DASHBOARD_LAYOUTS:
+        raise ValueError(f"Unknown layout {layout!r}. Valid: {VALID_DASHBOARD_LAYOUTS}")
+    _set_setting("dashboard_layout", layout)
+
+
+# ---------------------------------------------------------------------------
 # Authentication + web-access gate
 # ---------------------------------------------------------------------------
 # A single dashboard user. Credentials start at the factory default admin/admin;
