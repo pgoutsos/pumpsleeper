@@ -4,6 +4,13 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v4.8] — 2026-06-26
+
+### New
+- **Multiple email recipients.** The Email "Send to" field now accepts more than one address, separated by a semicolon (e.g. `you@example.com; other@example.com`). All addresses receive every notification, and the same applies to the settings-backup email. Commas also work as a separator.
+
+---
+
 ## [v4.7] — 2026-06-26
 
 ### New

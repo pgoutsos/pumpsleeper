@@ -13,6 +13,7 @@ time so settings changes take effect immediately without a restart.
 
 import html as _html
 import logging
+import re
 import smtplib
 import threading
 from email.mime.text import MIMEText
@@ -116,22 +117,33 @@ def _dashboard_link() -> str:
     return _get("tunnel_public_url", "") or _get("dashboard_local_url", "")
 
 
+def _parse_recipients(raw: str):
+    """Split a recipient string into a clean list of addresses.
+
+    Multiple addresses may be separated by semicolons (the documented
+    convention) or commas. Whitespace and empty entries are dropped.
+    """
+    if not raw:
+        return []
+    return [addr.strip() for addr in re.split(r"[;,]", raw) if addr.strip()]
+
+
 def _send_email(subject: str, body: str, cfg: dict, link: str = "", link_label: str = "Open Dashboard"):
     host = cfg["email_smtp_host"]
     port = int(cfg["email_smtp_port"] or 587)
     user = cfg["email_smtp_user"]
     pwd  = cfg["email_smtp_pass"]
     frm  = cfg["email_from"] or user
-    to   = cfg["email_to"]
+    recipients = _parse_recipients(cfg["email_to"])
 
-    if not (host and user and to):
+    if not (host and user and recipients):
         log.warning("NOTIF  email not configured — skipping")
         return
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"]    = frm
-    msg["To"]      = to
+    msg["To"]      = ", ".join(recipients)
 
     plain = body + (f"\n\n{link_label}: {link}" if link else "")
     msg.attach(MIMEText(plain, "plain"))
@@ -156,8 +168,8 @@ def _send_email(subject: str, body: str, cfg: dict, link: str = "", link_label: 
             s.starttls()
             s.ehlo()  # re-identify after TLS upgrade
             s.login(user, pwd)
-            s.sendmail(frm, [to], msg.as_string())
-        log.info(f"NOTIF  email sent → {to} ({subject})")
+            s.sendmail(frm, recipients, msg.as_string())
+        log.info(f"NOTIF  email sent → {', '.join(recipients)} ({subject})")
     except Exception as exc:
         log.error(f"NOTIF  email failed: {exc}")
 
@@ -284,8 +296,8 @@ def send_backup_email(data_bytes: bytes, filename: str):
         return False, "Email notifications are not enabled"
     host = cfg["email_smtp_host"]
     user = cfg["email_smtp_user"]
-    to   = cfg["email_to"]
-    if not (host and user and to):
+    recipients = _parse_recipients(cfg["email_to"])
+    if not (host and user and recipients):
         return False, "Email is not fully configured"
 
     from email.mime.base import MIMEBase
@@ -294,7 +306,7 @@ def send_backup_email(data_bytes: bytes, filename: str):
     msg = MIMEMultipart()
     msg["Subject"] = "PumpSleeper settings backup"
     msg["From"]    = cfg["email_from"] or user
-    msg["To"]      = to
+    msg["To"]      = ", ".join(recipients)
     msg.attach(MIMEText(
         "Attached is a backup of your PumpSleeper settings. Keep it somewhere "
         "safe — it contains your configuration, including saved credentials. To "
@@ -314,8 +326,8 @@ def send_backup_email(data_bytes: bytes, filename: str):
             s.starttls()
             s.ehlo()  # re-identify after TLS upgrade
             s.login(user, cfg["email_smtp_pass"])
-            s.sendmail(msg["From"], [to], msg.as_string())
-        log.info(f"NOTIF  backup email sent -> {to}")
+            s.sendmail(msg["From"], recipients, msg.as_string())
+        log.info(f"NOTIF  backup email sent -> {', '.join(recipients)}")
         return True, "Backup emailed"
     except Exception as exc:
         log.error(f"NOTIF  backup email failed: {exc}")

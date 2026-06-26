@@ -1210,7 +1210,8 @@ TEMPLATE = """<!DOCTYPE html>
         </div>
         <div class="form-row">
           <label>Send to</label>
-          <input class="form-input" id="email_to" placeholder="you@example.com">
+          <input class="form-input" id="email_to" placeholder="you@example.com; other@example.com">
+          <span style="font-size:11px;color:var(--muted)">Separate multiple addresses with a semicolon (;)</span>
         </div>
       </div>
       <div>
