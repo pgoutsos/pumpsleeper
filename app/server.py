@@ -19,6 +19,8 @@ Endpoints handled:
   GET  /bbs_parameters/<deviceid>    — device config fetch        (BBS device)
   GET  /rht_parameters/<deviceid>    — device config fetch        (SO1000 smart outlet)
   POST /rht_outlet_cycles            — pump-run reports           (SO1000 smart outlet)
+  GET  /pump_outlet_parameters/<deviceid> — device config fetch   (SmartPump)
+  POST /pump_outlet_cycles           — pump-run reports           (SmartPump)
   GET  /new_firmware/<deviceid>      — OTA check
 
 Device types (user-selected in dashboard Settings, db key 'device_type'):
@@ -28,6 +30,16 @@ Device types (user-selected in dashboard Settings, db key 'device_type'):
              POST /rht_outlet_cycles. The SO1000-specific endpoints answer
              locally ONLY when 'so1000' is selected; otherwise they fall through
              to the catch-all (record + forward) so BBS behavior is untouched.
+  'smartpump' — the PumpSpy SmartPump. A third variant decoded from a new-user
+             capture (2026-06-26). Config comes from GET /pump_outlet_parameters
+             and pump runs arrive as POST /pump_outlet_cycles. Same gating rule:
+             these endpoints answer locally ONLY when 'smartpump' is selected,
+             otherwise they fall through to the catch-all.
+             UNIT NOTE: in the capture, cycleDuration is in SECONDS (values
+             21-149), NOT milliseconds like the SO1000. cycleCurrent was 0 on
+             every record so its unit is assumed mA (as SO1000) but UNVERIFIED.
+             If a real run proves otherwise, flip SMARTPUMP_DURATION_IS_SECONDS
+             below (and the matching dashboard pump_outlet_cycle branch).
 
 SO1000 firmware quirks (decoded from a bypass capture against the real cloud,
 2026-06-12 — see memory/pumpsleeper-so1000-investigation.md):
@@ -741,6 +753,105 @@ def rht_outlet_cycles():
             # firmware appears to treat null as "not acknowledged" and may stall
             # future run reports. Derive a stable non-zero integer from the run
             # timestamp so the device treats the record as confirmed.
+            "idPumpOutletCycleData": (cycle.get("utcunixTime", 0) % 2147483647) or 1,
+            "date_time":     None, "year_num":      None, "month_num": None,
+            "week_num":      None, "day_num":       None, "total_count": None,
+            "total_average": None, "gallons":       None,
+            "cycleCurrent":  float(cycle.get("cycleCurrent", 0)),
+            "cycleDuration": cycle.get("cycleDuration"),
+            "deviceID":      cycle.get("deviceID"),
+            "utcunixTime":   cycle.get("utcunixTime"),
+            "recordNumber":  cycle.get("recordNumber", 0),
+        })
+    return jsonify(response), 200
+
+
+# ---------------------------------------------------------------------------
+# SmartPump endpoints — active only when device_type == 'smartpump'
+# ---------------------------------------------------------------------------
+# Decoded from a new-user capture (2026-06-26). The SmartPump is a third
+# reporting variant: config is fetched via GET /pump_outlet_parameters and pump
+# runs arrive as POST /pump_outlet_cycles (cf. SO1000's /rht_* equivalents).
+#
+# UNITS (from the capture): cycleDuration is in SECONDS (observed 21-149 — these
+# would be implausible sub-second runs if treated as ms like the SO1000).
+# cycleCurrent was 0 on every record, so its unit is ASSUMED mA (matching the
+# SO1000) but is UNVERIFIED. Flip this flag if a real run proves ms.
+SMARTPUMP_DURATION_IS_SECONDS = True
+
+# We have no real-cloud config capture for this device. In the new-user capture
+# the SmartPump kept reporting runs after receiving the catch-all's
+# {"status":"ok"} for /pump_outlet_parameters, so that's a safe takeover
+# fallback. In proxy mode we forward and return the real config when available.
+PUMP_OUTLET_PARAMETERS_FALLBACK = {"status": "ok"}
+
+
+@app.route("/pump_outlet_parameters/<int:device_id>", methods=["GET"])
+def pump_outlet_parameters(device_id):
+    """
+    SmartPump config poll. Like the SO1000's /rht_parameters, the capture shows
+    the device declaring a Content-Length (142) on a GET while sending NO body —
+    so do NOT read request data anywhere in this handler (it would block until
+    the device gives up). proxy_forward() already skips the body on GET.
+    """
+    if get_device_type() != "smartpump":
+        return _catch(f"pump_outlet_parameters/{device_id}",
+                      f"pump_outlet_parameters/{device_id}")
+    log.info(f"PARAMS (SmartPump) requested by device {device_id}")
+    record("params_fetch", {"deviceid": device_id, "device_type": "smartpump"})
+
+    # Prefer the real cloud's config in proxy mode; only pass it through if it's
+    # a success (a non-200 must not reach the device or it may stop reporting).
+    proxied = proxy_forward()
+    if proxied is not None and proxied.status_code == 200:
+        return proxied
+
+    # Takeover mode, proxy unreachable, or upstream error: canned fallback.
+    return jsonify(PUMP_OUTLET_PARAMETERS_FALLBACK), 200
+
+
+@app.route("/pump_outlet_cycles", methods=["POST"])
+def pump_outlet_cycles():
+    """
+    SmartPump pump-run report. JSON array body, e.g.:
+      [{"deviceID": ..., "recordNumber": 0, "utcunixTime": 1782436918000,
+        "cycleDuration": 102, "cycleCurrent": 0}]
+    cycleDuration is SECONDS (see SMARTPUMP_DURATION_IS_SECONDS), cycleCurrent mA.
+    Answer locally + forward to pumpspy.com in the background (same pattern as
+    /pings, /pump_outlet_alerts and /rht_outlet_cycles) so their app stays in sync.
+    """
+    if get_device_type() != "smartpump":
+        return _catch("pump_outlet_cycles", "pump_outlet_cycles")
+
+    body = request.get_json(force=True, silent=True) or []
+    if not isinstance(body, list):
+        body = [body]
+
+    for cycle in body:
+        ts_ms = cycle.get("utcunixTime", 0)
+        raw   = cycle.get("cycleDuration", 0) or 0
+        dur_s = round(raw if SMARTPUMP_DURATION_IS_SECONDS else raw / 1000, 2)
+        amps  = (cycle.get("cycleCurrent", 0) or 0) / 1000
+        ts = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%H:%M:%S")
+        log.info(f"MAIN   ran (SmartPump)  duration={dur_s}s  current={amps:.2f}A  device_time={ts}")
+        record("pump_outlet_cycle", cycle)
+
+        # Publish to MQTT + notify, mirroring the SO1000 main-pump path.
+        iso_ts = (datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).isoformat()
+                  if ts_ms else datetime.now(timezone.utc).isoformat())
+        gal = round(dur_s / 1.02, 1) if dur_s else 0   # same flow estimate as BBS/SO1000
+        mqtt.publish_main_pump_run(iso_ts, dur_s, gal, amps)
+        notif.notify(notif.EVENT_MAIN_PUMP,
+                     f"Duration: {dur_s}s · Est. {gal} gal · {amps:.2f}A")
+
+    _fire_and_forget(request.method, request.path,
+                     request.headers, request.get_data(), request.query_string)
+
+    # Local response mirrors the SO1000 enriched-record shape. Derive a stable
+    # non-zero ack id from the timestamp (null may stall future run reports).
+    response = []
+    for cycle in body:
+        response.append({
             "idPumpOutletCycleData": (cycle.get("utcunixTime", 0) % 2147483647) or 1,
             "date_time":     None, "year_num":      None, "month_num": None,
             "week_num":      None, "day_num":       None, "total_count": None,

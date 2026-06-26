@@ -216,6 +216,32 @@ def compute_data(events, tz_offset_minutes: int = 0,
                 "loaded_v":  None,
             })
 
+        elif kind == "pump_outlet_cycle":
+            # SmartPump pump-run report (POST /pump_outlet_cycles).
+            # cycleDuration is SECONDS (NOT ms like the SO1000); cycleCurrent is
+            # mA (assumed, unverified). The device timestamps the run itself
+            # (utcunixTime, ms) — prefer it over our receive time for "ts".
+            dur_s_raw = data.get("cycleDuration")
+            mamp   = data.get("cycleCurrent", 0) or 0
+            ts_ms  = data.get("utcunixTime")
+            run_ts = ts
+            if ts_ms:
+                try:
+                    run_ts = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).isoformat()
+                except Exception:
+                    pass
+            duration_s = round(dur_s_raw, 1) if dur_s_raw is not None else None
+            main_bbs_runs.append({
+                "ts":        run_ts,
+                "motor":     "STOPPED",
+                "ticks":     None,
+                "duration":  duration_s,
+                "gallons":   round(duration_s / 1.02, 1) if duration_s else None,  # same flow estimate as BBS
+                "amps":      round(mamp / 1000, 2),
+                "battery_v": None,   # outlet has no backup battery
+                "loaded_v":  None,
+            })
+
         elif kind == "unknown":
             unknowns.append({
                 "ts":     ts,
@@ -486,29 +512,32 @@ TEMPLATE = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PumpSleeper</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
   :root {
-    --bg: #07090f; --card: #0e1220; --border: #1a2040;
-    --text: #dde5f4; --muted: #4a5878; --green: #22c55e;
-    --red: #ef4444; --yellow: #f59e0b; --blue: #00c8ff; --purple: #7755ee;
+    --bg: #0c111b; --card: #171e2c; --border: #242e40;
+    --text: #e7ecf3; --muted: #8e98ac; --green: #34d27a;
+    --red: #f0616a; --yellow: #fbb838; --blue: #3a7bff; --purple: #7c5cff;
   }
   /* Light palette — applied for explicit light, or auto + OS light preference */
   :root[data-theme="light"] {
-    --bg: #f0f4fa; --card: #ffffff; --border: #d5dcea;
-    --text: #111827; --muted: #9aaac0; --green: #16a34a;
-    --red: #dc2626; --yellow: #d97706; --blue: #0077bb; --purple: #5533bb;
+    --bg: #ebeff6; --card: #ffffff; --border: #e2e7f0;
+    --text: #1a2233; --muted: #7e8aa0; --green: #16a34a;
+    --red: #dc2626; --yellow: #c77b0e; --blue: #2a66e6; --purple: #6d4fe0;
   }
   @media (prefers-color-scheme: light) {
     :root[data-theme="auto"] {
-      --bg: #f0f4fa; --card: #ffffff; --border: #d5dcea;
-      --text: #111827; --muted: #9aaac0; --green: #16a34a;
-      --red: #dc2626; --yellow: #d97706; --blue: #0077bb; --purple: #5533bb;
+      --bg: #ebeff6; --card: #ffffff; --border: #e2e7f0;
+      --text: #1a2233; --muted: #7e8aa0; --green: #16a34a;
+      --red: #dc2626; --yellow: #c77b0e; --blue: #2a66e6; --purple: #6d4fe0;
     }
   }
   .theme-btn.active { border-color: var(--blue); color: var(--blue); }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; font-size: 14px; }
+  body { background: var(--bg); color: var(--text); font-family: 'Space Grotesk', system-ui, sans-serif; font-size: 14px; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; text-rendering: optimizeLegibility; }
   header { display: flex; align-items: center; justify-content: space-between; padding: 16px 24px;
            border-bottom: 1px solid var(--border); }
   header h1 { font-size: 18px; font-weight: 600; letter-spacing: 0.5px; }
@@ -524,7 +553,7 @@ TEMPLATE = """<!DOCTYPE html>
   .grid { display: grid; gap: 16px; padding: 20px 24px; }
   .stats { grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); }
   .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
-  .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); margin-bottom: 8px; }
+  .stat-label { font-family: 'JetBrains Mono', monospace; font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); margin-bottom: 8px; }
   .stat-value { font-size: 26px; font-weight: 700; }
   .stat-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
   .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
@@ -532,7 +561,7 @@ TEMPLATE = """<!DOCTYPE html>
   .dot.offline { background: var(--red); }
   .dot.pending { background: var(--yellow); animation: pulse 1.2s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
-  .section-title { font-size: 13px; font-weight: 600; color: var(--muted);
+  .section-title { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; color: var(--muted);
                    text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 12px; }
   .chart-wrap { position: relative; height: 200px; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -705,7 +734,7 @@ TEMPLATE = """<!DOCTYPE html>
 </head>
 <body>
 <header>
-  <h1>Pump<span>Sleeper</span></h1>
+  <h1><svg viewBox="0 0 122 124" fill="none" xmlns="http://www.w3.org/2000/svg" width="1.25em" height="1.25em" style="vertical-align:-0.22em;margin-right:2px"><defs><linearGradient id="psg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3a7bff"/><stop offset="1" stop-color="#1fd3e0"/></linearGradient></defs><line x1="80" y1="94" x2="100" y2="114" stroke="url(#psg)" stroke-width="11" stroke-linecap="round"/><path d="M60 16 C76 42 92 58 92 74 A32 32 0 1 1 28 74 C28 58 44 42 60 16 Z" stroke="url(#psg)" stroke-width="8.5" stroke-linejoin="round"/></svg>Pump<span>Sleeper</span></h1>
   <div style="display:flex;align-items:center;gap:14px">
     <div class="layout-toggle">
       <button class="layout-btn {% if dashboard_layout == 'detailed' %}active{% endif %}" id="btn-layout-detailed" onclick="setLayout('detailed')">Detailed</button>
@@ -1009,6 +1038,10 @@ TEMPLATE = """<!DOCTYPE html>
       <label class="toggle-label" style="gap:8px;align-items:flex-start">
         <input type="radio" name="device_type" value="so1000" onchange="saveDeviceType(this.value)" style="margin-top:3px">
         <span>PumpSpy smart outlet <span style="color:var(--muted);font-weight:400">&mdash; SO1000 pump monitoring outlet</span></span>
+      </label>
+      <label class="toggle-label" style="gap:8px;align-items:flex-start">
+        <input type="radio" name="device_type" value="smartpump" onchange="saveDeviceType(this.value)" style="margin-top:3px">
+        <span>PumpSpy SmartPump <span style="color:var(--muted);font-weight:400">&mdash; reports runs via /pump_outlet_cycles</span></span>
       </label>
       <div style="font-size:11px;color:var(--muted);line-height:1.5">
         Select which PumpSpy device is connected to the hotspot. The two products report
@@ -1771,7 +1804,7 @@ function updateCompact(d) {
   renderCompactHistory();
 
   // Device card
-  if (el('c-model')) el('c-model').textContent = d.device_type === 'so1000' ? 'SO1000' : 'BBS';
+  if (el('c-model')) el('c-model').textContent = d.device_type === 'so1000' ? 'SO1000' : d.device_type === 'smartpump' ? 'SmartPump' : 'BBS';
   if (el('c-ip'))    el('c-ip').textContent    = d.device_ip || '—';
   if (el('c-signal')) {
     el('c-signal').innerHTML = d.last_rssi !== null && d.last_rssi !== undefined
@@ -2682,34 +2715,37 @@ MOBILE_TEMPLATE = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#07090f">
+<meta name="theme-color" content="#0c111b">
 <title>PumpSleeper</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
   :root {
-    --bg: #07090f; --card: #0e1220; --border: #1a2040;
-    --text: #dde5f4; --muted: #4a5878; --green: #22c55e;
-    --red: #ef4444; --yellow: #f59e0b; --blue: #00c8ff; --purple: #7755ee;
+    --bg: #0c111b; --card: #171e2c; --border: #242e40;
+    --text: #e7ecf3; --muted: #8e98ac; --green: #34d27a;
+    --red: #f0616a; --yellow: #fbb838; --blue: #3a7bff; --purple: #7c5cff;
     --nav-h: 60px; --bar-bg: rgba(7,9,15,0.94);
   }
   /* Light palette — explicit light, or auto + OS light preference */
   :root[data-theme="light"] {
-    --bg: #f0f4fa; --card: #ffffff; --border: #d5dcea;
-    --text: #111827; --muted: #9aaac0; --green: #16a34a;
-    --red: #dc2626; --yellow: #d97706; --blue: #0077bb; --purple: #5533bb;
+    --bg: #ebeff6; --card: #ffffff; --border: #e2e7f0;
+    --text: #1a2233; --muted: #7e8aa0; --green: #16a34a;
+    --red: #dc2626; --yellow: #c77b0e; --blue: #2a66e6; --purple: #6d4fe0;
     --bar-bg: rgba(240,244,250,0.94);
   }
   @media (prefers-color-scheme: light) {
     :root[data-theme="auto"] {
-      --bg: #f0f4fa; --card: #ffffff; --border: #d5dcea;
-      --text: #111827; --muted: #9aaac0; --green: #16a34a;
-      --red: #dc2626; --yellow: #d97706; --blue: #0077bb; --purple: #5533bb;
+      --bg: #ebeff6; --card: #ffffff; --border: #e2e7f0;
+      --text: #1a2233; --muted: #7e8aa0; --green: #16a34a;
+      --red: #dc2626; --yellow: #c77b0e; --blue: #2a66e6; --purple: #6d4fe0;
       --bar-bg: rgba(240,244,250,0.94);
     }
   }
   .theme-btn.active { border-color: var(--blue); color: var(--blue); }
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
-  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif;
+  body { background: var(--bg); color: var(--text); font-family: 'Space Grotesk', system-ui, sans-serif;
          font-size: 15px; padding-bottom: calc(var(--nav-h) + env(safe-area-inset-bottom)); }
 
   /* ── Sticky top bar ─────────────────────────────────────────── */
@@ -2739,7 +2775,7 @@ MOBILE_TEMPLATE = """<!DOCTYPE html>
   .dot.offline { background: var(--red); }
   .dot.pending { background: var(--yellow); animation: pulse 1.2s ease-in-out infinite; }
   @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
-  .section-title { font-size: 13px; font-weight: 600; color: var(--muted);
+  .section-title { font-family: 'JetBrains Mono', monospace; font-size: 12px; font-weight: 600; color: var(--muted);
                    text-transform: uppercase; letter-spacing: 0.6px; }
   .chart-wrap { position: relative; height: 200px; }
 
@@ -2863,12 +2899,54 @@ MOBILE_TEMPLATE = """<!DOCTYPE html>
   .desktop-link { display:block; text-align:center; color:var(--muted); font-size:12px;
                   padding:16px; text-decoration:none; }
   .desktop-link:active { color:var(--text); }
+
+  /* Layout toggle pill */
+  .layout-toggle { display:flex; align-items:center; gap:4px; background:var(--bg);
+                   border:1px solid var(--border); border-radius:6px; padding:2px; }
+  .layout-btn { padding:4px 12px; border-radius:4px; border:none; font-size:11px;
+                font-weight:600; cursor:pointer; background:transparent;
+                color:var(--muted); transition:all 0.15s; letter-spacing:0.3px; }
+  .layout-btn.active { background:var(--card); color:var(--text);
+                       box-shadow:0 1px 3px rgba(0,0,0,0.3); }
+  /* Compact layout */
+  #view-compact { display:none; padding:14px; }
+  .compact-grid { display:flex; flex-direction:column; gap:12px; }
+  .compact-col { display:flex; flex-direction:column; gap:12px; }
+  .compact-stat-row { display:flex; gap:0; border-bottom:1px solid var(--border); padding-bottom:14px; margin-bottom:14px; }
+  .compact-stat { flex:1; padding-right:12px; }
+  .compact-stat + .compact-stat { padding-left:12px; border-left:1px solid var(--border); }
+  .compact-stat-num { font-size:28px; font-weight:700; line-height:1; }
+  .compact-stat-unit { font-size:13px; color:var(--muted); font-weight:600; }
+  .compact-stat-label { font-size:10px; color:var(--muted); margin-top:4px; }
+  .compact-last-run { font-size:13px; color:var(--muted); }
+  .compact-last-run strong { color:var(--blue); font-weight:600; }
+  .compact-device-row { display:flex; justify-content:space-between; align-items:baseline;
+                        padding:8px 0; border-bottom:1px solid var(--border); font-size:13px; }
+  .compact-device-row:last-child { border-bottom:none; }
+  .compact-device-key { color:var(--muted); }
+  .compact-history-table { width:100%; border-collapse:collapse; font-size:13px; margin-top:8px; }
+  .compact-history-table th { text-align:left; padding:6px 8px; color:var(--muted);
+                              font-size:11px; font-weight:500; text-transform:uppercase;
+                              letter-spacing:0.4px; border-bottom:1px solid var(--border); }
+  .compact-history-table td { padding:7px 8px; border-bottom:1px solid var(--border); }
+  .compact-history-table tr:last-child td { border-bottom:none; }
+  .compact-history-table .dur { color:var(--blue); font-weight:600; }
+  .compact-history-table .long-run { color:var(--red); font-size:11px; font-weight:600; }
+  .compact-online { font-size:15px; font-weight:600; margin-bottom:14px; }
+  /* Signal bars */
+  .sig-bars { display:inline-flex; align-items:flex-end; gap:2px; height:14px; vertical-align:middle; margin-left:5px; }
+  .sig-bar { width:3px; border-radius:1px; background:var(--border); }
+  .sig-bar.lit { background:var(--blue); }
+  .sig-bar:nth-child(1) { height:4px; }
+  .sig-bar:nth-child(2) { height:7px; }
+  .sig-bar:nth-child(3) { height:10px; }
+  .sig-bar:nth-child(4) { height:14px; }
 </style>
 </head>
 <body class="mobile">
 <header>
   <div class="topline">
-    <h1>Pump<span>Sleeper</span></h1>
+    <h1><svg viewBox="0 0 122 124" fill="none" xmlns="http://www.w3.org/2000/svg" width="1.25em" height="1.25em" style="vertical-align:-0.22em;margin-right:2px"><defs><linearGradient id="psg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3a7bff"/><stop offset="1" stop-color="#1fd3e0"/></linearGradient></defs><line x1="80" y1="94" x2="100" y2="114" stroke="url(#psg)" stroke-width="11" stroke-linecap="round"/><path d="M60 16 C76 42 92 58 92 74 A32 32 0 1 1 28 74 C28 58 44 42 60 16 Z" stroke="url(#psg)" stroke-width="8.5" stroke-linejoin="round"/></svg>Pump<span>Sleeper</span></h1>
     <span id="refresh-info">Loading…</span>
   </div>
   {% if show_mode_toggle %}
@@ -2877,9 +2955,16 @@ MOBILE_TEMPLATE = """<!DOCTYPE html>
     <button class="mode-btn inactive" id="btn-takeover" onclick="setMode('takeover')">Takeover</button>
   </div>
   {% endif %}
+  <div style="margin-top:10px">
+    <div class="layout-toggle">
+      <button class="layout-btn {% if dashboard_layout == 'detailed' %}active{% endif %}" id="btn-layout-detailed" onclick="setLayout('detailed')">Detailed</button>
+      <button class="layout-btn {% if dashboard_layout == 'compact' %}active{% endif %}"  id="btn-layout-compact"  onclick="setLayout('compact')">Compact</button>
+    </div>
+  </div>
 </header>
 
 <div id="tab-dashboard" class="tab-panel active">
+<div id="view-detailed" {% if dashboard_layout == 'compact' %}style="display:none"{% endif %}>
 """ + _AUTH_BANNER + _STAT_CARDS + """
 <div class="subtab-nav">
   <button class="subtab-btn active" onclick="showSubTab('pump')">Pump Run History</button>
@@ -2889,6 +2974,109 @@ MOBILE_TEMPLATE = """<!DOCTYPE html>
 """ + _PUMP_WIDGET + """</div>
 <div id="subtab-signal" class="subtab-panel">
 """ + _RSSI_WIDGET + """</div>
+</div><!-- end view-detailed -->
+
+<!-- Compact view -->
+<div id="view-compact" {% if dashboard_layout != 'compact' %}style="display:none"{% endif %}>
+  <div class="compact-grid">
+
+    <!-- Status card -->
+    <div class="card">
+      <div class="compact-online">
+        <span id="c-online-dot" class="dot offline"></span><span id="c-online-text">—</span>
+        <span style="float:right;font-size:12px;font-weight:400;color:var(--muted)" id="c-last-heard">—</span>
+      </div>
+      <div class="compact-stat-row" id="c-stat-row">
+        <div class="compact-stat">
+          <div class="compact-stat-num" id="c-runs-today">—</div>
+          <div class="compact-stat-label">runs today</div>
+        </div>
+        <div class="compact-stat">
+          <div><span class="compact-stat-num" id="c-gal-today">—</span> <span class="compact-stat-unit">gal</span></div>
+          <div class="compact-stat-label">estimated today</div>
+        </div>
+        <div class="compact-stat" id="c-longest-col">
+          <div><span class="compact-stat-num" id="c-longest-run">—</span> <span class="compact-stat-unit">s</span></div>
+          <div class="compact-stat-label">longest run today</div>
+        </div>
+        <div class="compact-stat" id="c-water-col" style="display:none">
+          <div class="compact-stat-num" id="c-water-state" style="font-size:24px">—</div>
+          <div class="compact-stat-label">water sensor</div>
+        </div>
+      </div>
+      <div class="compact-last-run" id="c-last-run-line" style="color:var(--muted)">—</div>
+    </div>
+
+    <!-- Device card -->
+    <div class="card">
+      <div class="section-title" style="margin-bottom:10px">Device</div>
+      <div class="compact-device-row">
+        <span class="compact-device-key">Model</span>
+        <span id="c-model">—</span>
+      </div>
+      <div class="compact-device-row">
+        <span class="compact-device-key">IP</span>
+        <span id="c-ip" style="font-family:monospace;letter-spacing:0.3px">—</span>
+      </div>
+      <div class="compact-device-row">
+        <span class="compact-device-key">Signal</span>
+        <span id="c-signal">—</span>
+      </div>
+      <div class="compact-device-row" id="c-water-row">
+        <span class="compact-device-key">Water sensor</span>
+        <span id="c-water-val">—</span>
+      </div>
+      <div class="compact-device-row">
+        <span class="compact-device-key">Mode</span>
+        <span id="c-mode">—</span>
+      </div>
+    </div>
+
+    <!-- Notifications card -->
+    <div class="card">
+      <div class="section-title" style="margin-bottom:10px">Notifications</div>
+      <div class="compact-device-row">
+        <span class="compact-device-key">Email</span>
+        <span id="c-notif-email">—</span>
+      </div>
+      <div class="compact-device-row">
+        <span class="compact-device-key">Ntfy</span>
+        <span id="c-notif-ntfy">—</span>
+      </div>
+      <div class="compact-device-row">
+        <span class="compact-device-key">Last sent</span>
+        <span id="c-notif-last">—</span>
+      </div>
+    </div>
+
+    <!-- Run history card -->
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+        <span style="font-size:14px;font-weight:600">Pump run history</span>
+        <button id="c-today-toggle" onclick="toggleCompactToday()"
+          style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:5px;cursor:pointer;
+                 border:1px solid var(--border);background:transparent;color:var(--muted);transition:all 0.15s">
+          Today
+        </button>
+      </div>
+      <div class="scroll-table">
+        <table class="compact-history-table" id="c-history-table">
+          <thead><tr>
+            <th>Time</th>
+            <th>Duration</th>
+            <th>Current</th>
+            <th>Gallons (est)</th>
+          </tr></thead>
+          <tbody id="c-history-tbody">
+            <tr><td colspan="4" class="empty">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div><!-- /compact-grid -->
+</div><!-- end view-compact -->
+
 </div><!-- end tab-dashboard -->
 
 <div id="tab-settings" class="tab-panel">
@@ -3576,8 +3764,8 @@ LOGIN_TEMPLATE = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PumpSleeper — Sign in</title>
 <style>
-  :root { --bg:#07090f; --card:#0e1220; --border:#1a2040; --text:#dde5f4;
-          --muted:#4a5878; --blue:#00c8ff; --red:#ef4444; --yellow:#f59e0b; }
+  :root { --bg:#0c111b; --card:#171e2c; --border:#242e40; --text:#e7ecf3;
+          --muted:#8e98ac; --blue:#3a7bff; --red:#f0616a; --yellow:#fbb838; }
   * { box-sizing:border-box; margin:0; padding:0; }
   body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif;
          min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
@@ -3598,7 +3786,7 @@ LOGIN_TEMPLATE = """<!DOCTYPE html>
 </head>
 <body>
   <form class="login-card" method="POST">
-    <h1>Pump<span>Sleeper</span></h1>
+    <h1><svg viewBox="0 0 122 124" fill="none" xmlns="http://www.w3.org/2000/svg" width="1.25em" height="1.25em" style="vertical-align:-0.22em;margin-right:2px"><defs><linearGradient id="psg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3a7bff"/><stop offset="1" stop-color="#1fd3e0"/></linearGradient></defs><line x1="80" y1="94" x2="100" y2="114" stroke="url(#psg)" stroke-width="11" stroke-linecap="round"/><path d="M60 16 C76 42 92 58 92 74 A32 32 0 1 1 28 74 C28 58 44 42 60 16 Z" stroke="url(#psg)" stroke-width="8.5" stroke-linejoin="round"/></svg>Pump<span>Sleeper</span></h1>
     <div class="sub">Sign in to continue</div>
     <label for="username">Username</label>
     <input id="username" name="username" autocomplete="username" autofocus>
@@ -3662,8 +3850,8 @@ def logout():
 # notification channels (email and/or ntfy). Token is single-use, 30-min TTL.
 # ---------------------------------------------------------------------------
 _AUTH_CSS = """
-  :root { --bg:#07090f; --card:#0e1220; --border:#1a2040; --text:#dde5f4;
-          --muted:#4a5878; --blue:#00c8ff; --red:#ef4444; --green:#22c55e; }
+  :root { --bg:#0c111b; --card:#171e2c; --border:#242e40; --text:#e7ecf3;
+          --muted:#8e98ac; --blue:#3a7bff; --red:#f0616a; --green:#34d27a; }
   * { box-sizing:border-box; margin:0; padding:0; }
   body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif;
          min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
@@ -3691,7 +3879,7 @@ FORGOT_TEMPLATE = """<!DOCTYPE html>
 <style>""" + _AUTH_CSS + """</style>
 </head><body>
   <form class="login-card" method="POST">
-    <h1>Pump<span>Sleeper</span></h1>
+    <h1><svg viewBox="0 0 122 124" fill="none" xmlns="http://www.w3.org/2000/svg" width="1.25em" height="1.25em" style="vertical-align:-0.22em;margin-right:2px"><defs><linearGradient id="psg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3a7bff"/><stop offset="1" stop-color="#1fd3e0"/></linearGradient></defs><line x1="80" y1="94" x2="100" y2="114" stroke="url(#psg)" stroke-width="11" stroke-linecap="round"/><path d="M60 16 C76 42 92 58 92 74 A32 32 0 1 1 28 74 C28 58 44 42 60 16 Z" stroke="url(#psg)" stroke-width="8.5" stroke-linejoin="round"/></svg>Pump<span>Sleeper</span></h1>
     <div class="sub">Reset your password</div>
     <p style="font-size:13px;color:var(--muted);line-height:1.6">We'll send a reset link to the notification channels you've configured (email and/or ntfy). The link expires in 30 minutes.</p>
     <button type="submit">Send reset link</button>
@@ -3709,7 +3897,7 @@ RESET_TEMPLATE = """<!DOCTYPE html>
 </head><body>
   {% if valid %}
   <form class="login-card" method="POST">
-    <h1>Pump<span>Sleeper</span></h1>
+    <h1><svg viewBox="0 0 122 124" fill="none" xmlns="http://www.w3.org/2000/svg" width="1.25em" height="1.25em" style="vertical-align:-0.22em;margin-right:2px"><defs><linearGradient id="psg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3a7bff"/><stop offset="1" stop-color="#1fd3e0"/></linearGradient></defs><line x1="80" y1="94" x2="100" y2="114" stroke="url(#psg)" stroke-width="11" stroke-linecap="round"/><path d="M60 16 C76 42 92 58 92 74 A32 32 0 1 1 28 74 C28 58 44 42 60 16 Z" stroke="url(#psg)" stroke-width="8.5" stroke-linejoin="round"/></svg>Pump<span>Sleeper</span></h1>
     <div class="sub">Set a new password</div>
     <input type="hidden" name="token" value="{{ token }}">
     <label for="password">New password (min 8 chars)</label>
@@ -3721,7 +3909,7 @@ RESET_TEMPLATE = """<!DOCTYPE html>
   </form>
   {% else %}
   <div class="login-card">
-    <h1>Pump<span>Sleeper</span></h1>
+    <h1><svg viewBox="0 0 122 124" fill="none" xmlns="http://www.w3.org/2000/svg" width="1.25em" height="1.25em" style="vertical-align:-0.22em;margin-right:2px"><defs><linearGradient id="psg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#3a7bff"/><stop offset="1" stop-color="#1fd3e0"/></linearGradient></defs><line x1="80" y1="94" x2="100" y2="114" stroke="url(#psg)" stroke-width="11" stroke-linecap="round"/><path d="M60 16 C76 42 92 58 92 74 A32 32 0 1 1 28 74 C28 58 44 42 60 16 Z" stroke="url(#psg)" stroke-width="8.5" stroke-linejoin="round"/></svg>Pump<span>Sleeper</span></h1>
     <div class="sub">Reset password</div>
     <div class="err">{{ err }}</div>
     <div class="backlink"><a href="/login">Back to sign in</a></div>

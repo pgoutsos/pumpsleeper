@@ -231,7 +231,7 @@ def set_capture_enabled(enabled: bool):
 #              poll + POST /rht_outlet_cycles pump-run reports)
 # Only ONE device is supported at a time (design decision, no auto-detection).
 # ---------------------------------------------------------------------------
-VALID_DEVICE_TYPES = ("bbs", "so1000")
+VALID_DEVICE_TYPES = ("bbs", "so1000", "smartpump")
 
 def get_device_type() -> str:
     val = _get_setting("device_type", "bbs")

@@ -4,6 +4,16 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v4.7] — 2026-06-26
+
+### New
+- **PumpSpy SmartPump support (third device model).** Added a `SmartPump` option to the device selector in Settings. This variant reports pump activity on its own endpoints — pump runs via `POST /pump_outlet_cycles` and config via `GET /pump_outlet_parameters/<deviceid>` — which PumpSleeper previously didn't recognise, so its runs were logged as "unknown" transactions and never appeared on the dashboard. When SmartPump is selected, these endpoints are now decoded, recorded as pump runs, and published to MQTT / notifications like the other models. For BBS and SO1000 the endpoints still fall through untouched.
+
+### Notes
+- SmartPump `cycleDuration` is interpreted as **seconds** (not milliseconds like the SO1000); `cycleCurrent` is assumed to be milliamps but is unverified pending a live run with a non-zero current reading.
+
+---
+
 ## [v4.6] — 2026-06-14
 
 ### New
