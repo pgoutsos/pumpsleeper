@@ -270,7 +270,7 @@ success "iptables rules applied and persisted"
 # ── sudoers rule for hotspot cycling ─────────────────────────────────────────
 header "Sudoers rule (hotspot cycle)"
 cat > /etc/sudoers.d/pumpsleeper-hotspot <<EOF
-$RUN_USER ALL=(ALL) NOPASSWD: /usr/bin/nmcli con down PumpSleeper-Hotspot, /usr/bin/nmcli con up PumpSleeper-Hotspot
+$RUN_USER ALL=(ALL) NOPASSWD: /usr/bin/nmcli con down PumpSleeper-Hotspot, /usr/bin/nmcli con up PumpSleeper-Hotspot, /usr/bin/systemctl restart pumpsleeper, /usr/bin/systemctl restart pumpsleeper-dashboard
 EOF
 chmod 440 /etc/sudoers.d/pumpsleeper-hotspot
 success "Sudoers rule written for $RUN_USER"

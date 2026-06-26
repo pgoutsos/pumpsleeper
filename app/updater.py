@@ -30,6 +30,7 @@ process down.
 import json
 import logging
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -229,13 +230,64 @@ def _set_state(**kwargs):
 # Apply update
 # ---------------------------------------------------------------------------
 
-def _restart_service(svc: str):
-    """Restart a systemd service. Requires the passwordless-sudo rule."""
-    subprocess.run(
-        ["sudo", "systemctl", "restart", svc],
-        capture_output=True, timeout=30,
-    )
-    log.info(f"UPDATE  restarted {svc}")
+def _restart_service(svc: str) -> bool:
+    """Restart a systemd service. Returns True if a restart was triggered.
+
+    Two layered paths so updates apply on EVERY install, not just ones with the
+    right sudoers rule:
+
+      1. Privileged clean restart via `sudo -n systemctl restart`. This needs the
+         passwordless-sudo rule added in firstboot/install. Installs that predate
+         that rule (the cause of "update applied but old code keeps running": the
+         restart silently failed and was never checked) don't have it.
+      2. No-sudo fallback: read the unit's MainPID (a read-only `systemctl show`,
+         no privilege needed) and SIGKILL it as the service user. systemd then
+         sees the unit fail and respawns it (Restart=on-failure/always) with the
+         freshly-installed code. This lets a shipped updater.py self-heal an
+         install that lacks the sudoers rule — no manual step, no reflash.
+
+    The old version called sudo WITHOUT -n and ignored the return code, so a
+    missing rule failed invisibly. We now check the result and report it.
+    """
+    # Path 1: privileged clean restart.
+    try:
+        r = subprocess.run(
+            ["sudo", "-n", "systemctl", "restart", svc],
+            capture_output=True, timeout=30,
+        )
+        if r.returncode == 0:
+            log.info(f"UPDATE  restarted {svc} via systemctl")
+            return True
+        log.warning(
+            f"UPDATE  'sudo systemctl restart {svc}' failed (rc={r.returncode}): "
+            f"{r.stderr.decode(errors='replace').strip()} — trying no-sudo fallback"
+        )
+    except Exception as exc:
+        log.warning(f"UPDATE  'sudo systemctl restart {svc}' errored: {exc} — trying fallback")
+
+    # Path 2: no-sudo fallback — signal the running process so systemd respawns it.
+    pid = 0
+    try:
+        r = subprocess.run(
+            ["systemctl", "show", "-p", "MainPID", "--value", svc],
+            capture_output=True, timeout=10, text=True,
+        )
+        pid = int((r.stdout or "0").strip() or 0)
+    except Exception as exc:
+        log.error(f"UPDATE  could not read MainPID for {svc}: {exc}")
+    if pid > 0:
+        try:
+            # SIGKILL (not SIGTERM): a clean TERM is treated as a successful stop
+            # and would NOT trip Restart=on-failure. A kill marks the unit failed,
+            # so systemd restarts it after RestartSec with the new code.
+            os.kill(pid, signal.SIGKILL)
+            log.info(f"UPDATE  restarted {svc} by signalling pid {pid} (no-sudo fallback)")
+            return True
+        except Exception as exc:
+            log.error(f"UPDATE  fallback kill of {svc} (pid {pid}) failed: {exc}")
+    else:
+        log.error(f"UPDATE  no running MainPID for {svc} — cannot restart")
+    return False
 
 
 def do_update(tag: str = None) -> tuple:
@@ -289,12 +341,21 @@ def do_update(tag: str = None) -> tuple:
         # Record the new version.
         set_current_version(tag)
 
-        # Persist the success result (read by /api/update across restarts).
-        try:
-            with open(RESULT_FILE, "w") as f:
-                json.dump({"tag": tag, "ts": _now(), "ok": True}, f)
-        except Exception:
-            pass
+        # The manual restart hint we surface if automatic restart can't happen.
+        restart_hint = (
+            "Update installed but the services could not be restarted "
+            "automatically, so the new version isn't running yet. On the Pi run: "
+            "sudo systemctl restart pumpsleeper pumpsleeper-dashboard  (or reboot)."
+        )
+
+        def _write_result(ok_restart: bool):
+            try:
+                with open(RESULT_FILE, "w") as f:
+                    json.dump({"tag": tag, "ts": _now(), "ok": True,
+                               "restart_ok": ok_restart,
+                               "restart_hint": None if ok_restart else restart_hint}, f)
+            except Exception:
+                pass
 
         # Notify BEFORE any restart — the dashboard restart below tears this
         # process down, so anything after it is not guaranteed to run.
@@ -306,19 +367,47 @@ def do_update(tag: str = None) -> tuple:
         except Exception as exc:
             log.warning(f"UPDATE  notification failed: {exc}")
 
-        # Mark done on disk BEFORE restarting so the UI sees a clean
-        # completion even though the dashboard process is about to die.
-        _set_state(running=False, phase="done", error=None, finished_at=_now())
-
-        # Restart services: server first, dashboard last (dashboard restart
-        # may kill this process, but all state above is already persisted).
+        # Restart services: server first, dashboard last (a successful dashboard
+        # restart kills this process, so everything that must be durable is
+        # written first). The server restart returning tells us whether the
+        # privileged/fallback path works at all on this install.
         _set_state(phase="restarting")
         log.info("UPDATE  restarting services...")
-        _restart_service("pumpsleeper")
-        # Re-assert done so a poll landing here still sees the terminal state.
-        _set_state(running=False, phase="done", finished_at=_now())
+        ok_server = _restart_service("pumpsleeper")
+
+        if not ok_server:
+            # Both restart paths failed for the server — the dashboard restart
+            # will fail the same way, so don't bother killing anything. Record
+            # the warning while we're still alive to do it.
+            log.error("UPDATE  service restart unavailable — manual restart needed")
+            _write_result(ok_restart=False)
+            _set_state(running=False, phase="done", restart_failed=True,
+                       error=restart_hint, finished_at=_now())
+            try:
+                import notifications as notif
+                notif.notify(notif.EVENT_UPDATE_INSTALLED,
+                             f"PumpSleeper {tag} installed, but needs a manual "
+                             f"restart to take effect (couldn't restart services).")
+            except Exception:
+                pass
+            return True, restart_hint
+
+        # Server restarted fine; assume the dashboard will too. Persist the
+        # success result + done state BEFORE the dashboard restart tears us down.
+        _write_result(ok_restart=True)
+        _set_state(running=False, phase="done", error=None,
+                   restart_failed=False, finished_at=_now())
         log.info(f"UPDATE  updated to {tag} — restarting dashboard now")
-        _restart_service("pumpsleeper-dashboard")  # may terminate this process
+        ok_dash = _restart_service("pumpsleeper-dashboard")  # may terminate this process
+
+        # We only reach here if the dashboard restart did NOT kill us — i.e. it
+        # failed despite the server succeeding (unusual). Flag it so it's visible.
+        if not ok_dash:
+            log.error("UPDATE  dashboard restart failed — manual restart needed")
+            _write_result(ok_restart=False)
+            _set_state(running=False, phase="done", restart_failed=True,
+                       error=restart_hint, finished_at=_now())
+            return True, restart_hint
 
         return True, f"Updated to {tag}"
 

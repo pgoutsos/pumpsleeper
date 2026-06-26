@@ -2490,8 +2490,16 @@ async function loadUpdateInfo() {
       const ago = fmtAgo(d.last_update.ts);
       const prog = document.getElementById('update-progress');
       prog.style.display = '';
-      prog.style.color = 'var(--green)';
-      prog.textContent = '✓ Successfully updated to ' + d.last_update.tag + ' · ' + ago;
+      if (d.last_update.restart_ok === false) {
+        // Files installed but services didn't restart — new code isn't live yet.
+        prog.style.color = 'var(--yellow)';
+        prog.textContent = '⚠ ' + d.last_update.tag + ' installed, but a restart is '
+          + 'needed to load it. On the Pi run: sudo systemctl restart pumpsleeper '
+          + 'pumpsleeper-dashboard (or reboot). · ' + ago;
+      } else {
+        prog.style.color = 'var(--green)';
+        prog.textContent = '✓ Successfully updated to ' + d.last_update.tag + ' · ' + ago;
+      }
     }
   } catch(e) {}
 }

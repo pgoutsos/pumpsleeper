@@ -4,6 +4,14 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v4.9] — 2026-06-26
+
+### Fixed
+- **Updates now actually restart the services.** Previously an update would download the new files and update the version label, but the automatic service restart silently failed on most installs (the service user wasn't permitted to run `systemctl restart`), so the old code kept running until a manual restart or reboot. The updater now verifies the restart and, if the privileged path isn't available, falls back to a no-sudo method that signals the running services so systemd respawns them with the new code — so updates take effect on their own. New installs also get an explicit permission rule for a clean restart.
+- **Update status is honest about restarts.** If an update installs but the services can't be restarted automatically, the Updates section now shows a clear warning telling you to restart (instead of reporting success while running old code).
+
+---
+
 ## [v4.8] — 2026-06-26
 
 ### New

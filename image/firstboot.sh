@@ -372,16 +372,20 @@ case "${1:-}" in
   start)
     IFACE="${2:?}"; DEVIP="${3:?}"; OUT="${4:?}"
     [[ "$IFACE" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bad iface" >&2; exit 3; }
-    [[ "$DEVIP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "bad ip" >&2; exit 3; }
+    # DEVIP is a single device IP, or "all" to capture every hotspot client
+    # (needed when more than one PumpSpy device is connected).
+    [[ "$DEVIP" =~ ^([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+|all)$ ]] || { echo "bad ip" >&2; exit 3; }
     systemctl stop "$UNIT" 2>/dev/null || true
     systemctl reset-failed "$UNIT" 2>/dev/null || true
     rm -f "$OUT"
     # Run tcpdump as a transient systemd unit so it survives this wrapper + sudo
     # exiting (sudo 1.9 kills a plain backgrounded child). Write to exactly $OUT
     # (no -C/-W rotation, which appends a numeric suffix the dashboard wouldn't
-    # find). Device-only traffic is tiny, so an uncapped file is fine.
+    # find). Hotspot traffic is tiny, so an uncapped file is fine.
+    FILTER=()
+    [ "$DEVIP" != all ] && FILTER=(host "$DEVIP")
     systemd-run --quiet --unit="$UNIT" --collect \
-        "$TCPDUMP" -i "$IFACE" -nn -s 0 -w "$OUT" host "$DEVIP"
+        "$TCPDUMP" -i "$IFACE" -nn -s 0 -w "$OUT" "${FILTER[@]}"
     ;;
   stop)
     OUT="${2:?}"; OWNER="${3:-}"
@@ -396,7 +400,7 @@ NETCAP
 chmod 755 /usr/local/bin/pumpsleeper-netcapture
 
 cat > /etc/sudoers.d/pumpsleeper-hotspot \
-    <<< "$RUN_USER ALL=(ALL) NOPASSWD: /usr/bin/nmcli con down PumpSleeper-Hotspot, /usr/bin/nmcli con up PumpSleeper-Hotspot, /usr/local/bin/pumpsleeper-netcapture"
+    <<< "$RUN_USER ALL=(ALL) NOPASSWD: /usr/bin/nmcli con down PumpSleeper-Hotspot, /usr/bin/nmcli con up PumpSleeper-Hotspot, /usr/local/bin/pumpsleeper-netcapture, /usr/bin/systemctl restart pumpsleeper, /usr/bin/systemctl restart pumpsleeper-dashboard"
 chmod 440 /etc/sudoers.d/pumpsleeper-hotspot
 
 # ── systemd services ──────────────────────────────────────────────────────────
