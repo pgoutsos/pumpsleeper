@@ -5,16 +5,15 @@ A local proxy and dashboard for **PumpSpy** sump pump monitors. PumpSleeper sits
 ## Features
 
 - **Three PumpSpy devices supported** — the **battery backup system** (BBS), the **SO1000 smart outlet**, and the **SmartPump**; pick yours in Settings → PumpSpy Device. Pump runs, alerts, and (on the smart outlet) water-sensor status are all captured. One connected device at a time
-- **Transparent proxy** — your device keeps talking to pumpspy.com normally while you get a local copy of every event
-- **Takeover mode** — answer the device locally when the pumpspy.com cloud is unreachable
+- **Local interception & logging** — PumpSleeper sits inline with your device and records every event locally, giving you a complete history independent of the pumpspy.com cloud
+- **Works when the cloud is down** — PumpSleeper answers the device directly, so monitoring keeps running even if pumpspy.com is unreachable
 - **Local dashboard** — an at-a-glance view of today's pump activity (main/backup runs, gallons, operating status), full pump run history, and signal-strength + battery trends; with the smart outlet selected, a live water-sensor status (Dry / HIGH) replaces the backup-pump stats
 - **Secure login** — the dashboard requires a single-user sign-in (default `admin` / `admin`, which you're prompted to change), with a "Forgot password?" flow that sends a reset link to your notification channels
 - **Remote web access** — expose the dashboard over the internet through a Cloudflare tunnel: a zero-config quick tunnel (no account) or your own named tunnel for a stable address on your domain. The current URL is shown in Settings and pushed to your notifications
-- **Notifications** — email (SMTP) and ntfy push for backup/main pump runs, high-water alerts, device offline, and update events; each notification includes a tap-through link to the dashboard. Settings save automatically — no Save button
+- **Notifications** — email (SMTP, with support for multiple recipients) and ntfy push for backup/main pump runs, high-water alerts, device offline, and update events; each notification includes a tap-through link to the dashboard. Settings save automatically — no Save button
 - **Device status** — real-time WiFi hotspot presence check, device IP display, hotspot cycle button
 - **Save Log** — one-click export of the recent service logs (Settings → Debug) for troubleshooting
 - **Home Assistant integration** — 19 MQTT entities with auto-discovery; custom Lovelace card included
-- **Mode toggle** — switch Proxy ↔ Takeover from the dashboard or HA card
 - **Self-update** — checks GitHub for new releases; auto-installs overnight or apply manually from the dashboard
 - **Pre-built Pi image** — flash and go; edit one config file on the SD card and PumpSleeper installs itself (and sets its hostname to `pumpsleeper`) on first boot
 
@@ -281,10 +280,8 @@ entities:
   device_online:        binary_sensor.pumpsleeper_device_online
   main_pump_running:    binary_sensor.pumpsleeper_main_pump_running
   signal_strength:      sensor.pumpsleeper_signal_strength
-  mode:                 select.pumpsleeper_mode
   operating_status:     sensor.pumpsleeper_operating_status
   last_ping_ts:         sensor.pumpsleeper_last_device_ping
-  mode_switched_ts:     sensor.pumpsleeper_mode_switched_at
   main_runs_today:      sensor.pumpsleeper_main_pump_runs_today
   main_runtime_today:   sensor.pumpsleeper_main_pump_runtime_today
   main_gallons_today:   sensor.pumpsleeper_main_pump_gallons_today
@@ -350,9 +347,8 @@ entities:
 - For Gmail, use an [App Password](https://myaccount.google.com/apppasswords) rather than your account password
 - For Office 365, use `smtp.office365.com` port `587` with your full email address as the username
 
-**Switching to Takeover mode but device still shows offline in HA**
-- The device needs to re-authenticate against PumpSleeper after mode switches
-- The card shows a "Pending" countdown (up to 3 minutes) while waiting for the device to check in
+**Device shows offline in HA after a restart**
+- The device may need to re-authenticate against PumpSleeper; the card shows a "Pending" countdown (up to 3 minutes) while waiting for it to check in
 - If it stays offline after 3 minutes, check that the device is still connected to the hotspot
 
 ---
