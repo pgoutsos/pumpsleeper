@@ -4,6 +4,13 @@ All notable changes to PumpSleeper are documented here.
 
 ---
 
+## [v4.10] — 2026-06-26
+
+### Fixed
+- **SmartPump run times were ~1000× too long.** The SmartPump (mode 3) reports run duration in milliseconds, but it was being read as seconds — so a 4.5-second run showed as 4528s, and estimated gallons were wildly inflated. Durations are now converted to seconds correctly, and estimated gallons are derived from the corrected value. Only the SmartPump is affected; the battery backup system and SO1000 are unchanged.
+
+---
+
 ## [v4.9] — 2026-06-26
 
 ### Fixed

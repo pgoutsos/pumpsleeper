@@ -773,11 +773,12 @@ def rht_outlet_cycles():
 # reporting variant: config is fetched via GET /pump_outlet_parameters and pump
 # runs arrive as POST /pump_outlet_cycles (cf. SO1000's /rht_* equivalents).
 #
-# UNITS (from the capture): cycleDuration is in SECONDS (observed 21-149 — these
-# would be implausible sub-second runs if treated as ms like the SO1000).
-# cycleCurrent was 0 on every record, so its unit is ASSUMED mA (matching the
-# SO1000) but is UNVERIFIED. Flip this flag if a real run proves ms.
-SMARTPUMP_DURATION_IS_SECONDS = True
+# UNITS: cycleDuration is in MILLISECONDS (same as the SO1000), CONFIRMED by a
+# test user's real run on 2026-06-26 — a reported value of 4528 is a 4.528 s run.
+# (The original 2026-06-26 capture showed ~100 values, but that was a retry storm
+# of unacknowledged records, not real runs, so it misled the first guess of
+# "seconds".) cycleCurrent is treated as mA (matching the SO1000).
+SMARTPUMP_DURATION_MS = True
 
 # We have no real-cloud config capture for this device. In the new-user capture
 # the SmartPump kept reporting runs after receiving the catch-all's
@@ -816,7 +817,7 @@ def pump_outlet_cycles():
     SmartPump pump-run report. JSON array body, e.g.:
       [{"deviceID": ..., "recordNumber": 0, "utcunixTime": 1782436918000,
         "cycleDuration": 102, "cycleCurrent": 0}]
-    cycleDuration is SECONDS (see SMARTPUMP_DURATION_IS_SECONDS), cycleCurrent mA.
+    cycleDuration is MILLISECONDS (see SMARTPUMP_DURATION_MS), cycleCurrent mA.
     Answer locally + forward to pumpspy.com in the background (same pattern as
     /pings, /pump_outlet_alerts and /rht_outlet_cycles) so their app stays in sync.
     """
@@ -830,7 +831,7 @@ def pump_outlet_cycles():
     for cycle in body:
         ts_ms = cycle.get("utcunixTime", 0)
         raw   = cycle.get("cycleDuration", 0) or 0
-        dur_s = round(raw if SMARTPUMP_DURATION_IS_SECONDS else raw / 1000, 2)
+        dur_s = round(raw / 1000 if SMARTPUMP_DURATION_MS else raw, 2)
         amps  = (cycle.get("cycleCurrent", 0) or 0) / 1000
         ts = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%H:%M:%S")
         log.info(f"MAIN   ran (SmartPump)  duration={dur_s}s  current={amps:.2f}A  device_time={ts}")

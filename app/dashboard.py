@@ -218,10 +218,11 @@ def compute_data(events, tz_offset_minutes: int = 0,
 
         elif kind == "pump_outlet_cycle":
             # SmartPump pump-run report (POST /pump_outlet_cycles).
-            # cycleDuration is SECONDS (NOT ms like the SO1000); cycleCurrent is
-            # mA (assumed, unverified). The device timestamps the run itself
-            # (utcunixTime, ms) — prefer it over our receive time for "ts".
-            dur_s_raw = data.get("cycleDuration")
+            # cycleDuration is MILLISECONDS (like the SO1000) — confirmed by a
+            # test user's real run 2026-06-26 (a 4528 value = 4.528 s). cycleCurrent
+            # is mA. The device timestamps the run itself (utcunixTime, ms) —
+            # prefer it over our receive time for "ts".
+            dur_ms = data.get("cycleDuration")
             mamp   = data.get("cycleCurrent", 0) or 0
             ts_ms  = data.get("utcunixTime")
             run_ts = ts
@@ -230,7 +231,7 @@ def compute_data(events, tz_offset_minutes: int = 0,
                     run_ts = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).isoformat()
                 except Exception:
                     pass
-            duration_s = round(dur_s_raw, 1) if dur_s_raw is not None else None
+            duration_s = round(dur_ms / 1000, 1) if dur_ms is not None else None
             main_bbs_runs.append({
                 "ts":        run_ts,
                 "motor":     "STOPPED",
